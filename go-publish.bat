@@ -3,7 +3,7 @@ git clone https://github.com/HL7/fhir-ig-history-template.git ig-history
 git clone https://github.com/hl7au/ig-registry.git ig-registry
 
 git clone https://github.com/hl7au/au-fhir-core %CD%\hl7au\au-fhir-core
-ren CD%\hl7au\au-fhir-core\package-list.json CD%\hl7au\au-fhir-core\package-list.json.000
+del CD%\hl7au\au-fhir-core\package-list.json
 
 java -jar publisher.jar -generate-package-registry %CD%\webroot
 
