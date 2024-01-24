@@ -13,8 +13,8 @@ curl.exe --output %CD%\webroot\fhir\publication-feed.xml --url https://hl7.org.a
 
 
 cd %CD%\hl7au\au-fhir-core
-_updatePublisher.bat
-_genonce.bat
+call _updatePublisher.bat
+call _genonce.bat
 cd ..\..
 
 java -jar publisher.jar -go-publish -source %CD%\hl7au\au-fhir-core -web %CD%\webroot -history %CD%\ig-history -registry %CD%\ig-registry\fhir-ig-list.json -temp %CD%\temp -templates %CD%\templates
