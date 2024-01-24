@@ -1,0 +1,11 @@
+hl7au/
+ig-history/
+temp/
+webroot/fhir/
+webroot/fhir/core
+webroot/package-registry.json
+publisher.jar
+ig-registry/
+webroot/fhir/core/package-list.json
+webroot/fhir/package-feed.xml
+webroot/fhir/publication-feed.xml
