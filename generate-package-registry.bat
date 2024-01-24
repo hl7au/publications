@@ -1,0 +1,1 @@
+java -jar publisher.jar -generate-package-registry %CD%\webroot  
