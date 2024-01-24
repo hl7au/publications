@@ -9,3 +9,5 @@ ig-registry/
 webroot/fhir/core/package-list.json
 webroot/fhir/package-feed.xml
 webroot/fhir/publication-feed.xml
+webroot/ig-build-zips
+webroot/publish-counter.json
