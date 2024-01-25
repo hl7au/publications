@@ -5,12 +5,13 @@ git clone https://github.com/hl7au/ig-registry.git ig-registry
 git clone https://github.com/hl7au/au-fhir-core %CD%\hl7au\au-fhir-core
 del %CD%\hl7au\au-fhir-core\package-list.json
 
-java -jar publisher.jar -generate-package-registry %CD%\webroot
-
+mkdir %CD%\webroot\fhir
+mkdir %CD%\webroot\fhir\core
 curl.exe --output %CD%\webroot\fhir\core\package-list.json --url https://hl7.org.au/fhir/core/package-list.json
 curl.exe --output %CD%\webroot\fhir\package-feed.xml --url https://hl7.org.au/fhir/package-feed.xml
 curl.exe --output %CD%\webroot\fhir\publication-feed.xml --url https://hl7.org.au/fhir/publication-feed.xml
 
+java -jar publisher.jar -generate-package-registry %CD%\webroot
 
 cd %CD%\hl7au\au-fhir-core
 call _updatePublisher.bat
