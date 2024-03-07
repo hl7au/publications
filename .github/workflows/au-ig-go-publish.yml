@@ -13,7 +13,7 @@ jobs:
     container: hl7fhir/ig-publisher-base    # use ig publisher base image
     strategy:
       matrix:
-        project: ['core','base'] # base has error ```This website does not have an entry in the layout rules in /tmp/web-root/run-20240228/publish-setup.json to publish the IG with Package Id 'hl7.fhir.au.base'"```
+        project: ['core'] # base has error ```This website does not have an entry in the layout rules in /tmp/web-root/run-20240228/publish-setup.json to publish the IG with Package Id 'hl7.fhir.au.base'"```
     steps:
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
