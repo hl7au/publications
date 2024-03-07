@@ -62,7 +62,14 @@ jobs:
     - name: Download package-list.json
       run: |
         rm -rf hl7au/au-fhir-${{matrix.project}}/package-list.json
-        curl --output webroot/fhir/${{matrix.project}}/package-list.json --url https://hl7.org.au/fhir/${{matrix.project}}/package-list.json
+        URL="https://hl7.org.au/fhir"
+        if [ "${{ matrix.project }}" == "base" ]; then
+          FULL_URL="$URL/package-list.json"
+        else
+          FULL_URL="$URL/${{ matrix.project }}/package-list.json"
+        fi
+        
+        curl --output webroot/fhir/${{ matrix.project }}/package-list.json --url $FULL_URL
 
     - name: Download package-feed.xml
       run: |
