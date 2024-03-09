@@ -34,7 +34,7 @@ jobs:
       with:
         repository: hl7au/au-fhir-${{matrix.project}}
         path: hl7au/au-fhir-${{matrix.project}}
-        ref: ${ ${{steps.branch-names.outputs.current_branch}}/base\/"" }
+        ref: "4.2.0"
 
     - name: Checkout IG History Template Repository
       uses: actions/checkout@v4
