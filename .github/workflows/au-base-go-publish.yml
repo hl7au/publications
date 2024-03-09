@@ -23,7 +23,8 @@ jobs:
     - name: Running on a pull request branch.
       if: steps.branch-names.outputs.is_default == 'false'
       run: |
-        echo "Running on pr: ${ {steps.branch-names.outputs.current_branch}/base/}"
+        echo "Running on pr: ${ ${{steps.branch-names.outputs.current_branch}}/base\/"" }
+        
   
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
@@ -33,7 +34,7 @@ jobs:
       with:
         repository: hl7au/au-fhir-${{matrix.project}}
         path: hl7au/au-fhir-${{matrix.project}}
-        ref: ${{ steps.branch-names.outputs.current_branch }}
+        ref: ${ ${{steps.branch-names.outputs.current_branch}}/base\/"" }
 
     - name: Checkout IG History Template Repository
       uses: actions/checkout@v4
