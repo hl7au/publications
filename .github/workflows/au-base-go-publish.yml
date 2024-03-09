@@ -6,7 +6,7 @@ on:
   pull_request:
     branches:
       - '*'
-
+      
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,7 +33,7 @@ jobs:
       with:
         repository: hl7au/au-fhir-${{matrix.project}}
         path: hl7au/au-fhir-${{matrix.project}}
-        ref: ${{ steps.branch-names.outputs.current_branch }}
+        ref: "4.2.0-preview"
 
     - name: Checkout IG History Template Repository
       uses: actions/checkout@v4
