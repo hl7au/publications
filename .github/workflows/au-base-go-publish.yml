@@ -16,12 +16,14 @@ jobs:
         project: ['base'] # base has error 
     steps:
 
-    - name: Extract branch name
-      shell: bash
-      run: 
-        echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
-        echo  ${steps.extract_branch.outputs.branch}
-      id: extract_branch
+    - name: Get branch names.
+      id: branch-names
+      uses: tj-actions/branch-names@v8
+  
+    - name: Running on a pull request branch.
+      if: steps.branch-names.outputs.is_default == 'false'
+      run: |
+        echo "Running on pr: ${{ steps.branch-names.outputs.current_branch }}"
   
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
@@ -31,7 +33,7 @@ jobs:
       with:
         repository: hl7au/au-fhir-${{matrix.project}}
         path: hl7au/au-fhir-${{matrix.project}}
-        ref: ${steps.extract_branch.outputs.branch}
+        ref: ${{ steps.branch-names.outputs.current_branch }}
 
     - name: Checkout IG History Template Repository
       uses: actions/checkout@v4
