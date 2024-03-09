@@ -23,8 +23,8 @@ jobs:
     - name: Running on a pull request branch.
       if: steps.branch-names.outputs.is_default == 'false'
       run: |
-        v=${steps.branch-names.outputs.current_branch}
-        o= ${v/base\//""}
+        v="${steps.branch-names.outputs.current_branch}"
+        o=${v/base\//""}
         echo "Running on pr: ${o}"   
   
     - name: Checkout Publications Repository
