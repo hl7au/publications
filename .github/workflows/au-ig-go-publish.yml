@@ -2,7 +2,7 @@ name: Au IG Profiles publish->go-publish
 
 on:
   push:
-    branches: [ "feature/core" ]
+    branches: [ "core/**" ]
   pull_request:
     branches:
       - '*'
