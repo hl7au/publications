@@ -23,9 +23,9 @@ jobs:
     - name: Running on a pull request branch.
       if: steps.branch-names.outputs.is_default == 'false'
       run: |
-        v="${steps.branch-names.outputs.current_branch}"
-        o=${v/base\//""}
-        echo "Running on pr: ${o}"   
+        v=${steps.branch-names.outputs.current_branch}
+        # o=${v/base\//""}
+        echo "Running on pr: ${v}"   
   
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
