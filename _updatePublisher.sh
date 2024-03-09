@@ -3,7 +3,7 @@ pubsource=https://github.com/HL7/fhir-ig-publisher/releases/latest/download/
 publisher_jar=publisher.jar
 dlurl=$pubsource$publisher_jar
 
-input_cache_path=$PWD/
+input_cache_path=$PWD/input-cache/
 
 scriptdlroot=https://raw.githubusercontent.com/HL7/ig-publisher-scripts/main
 update_bat_url=$scriptdlroot/_updatePublisher.bat
@@ -117,13 +117,16 @@ if [[ $skipPrompts == true ]] || [[ $response =~ ^[yY].*$ ]]; then
 
   curl -L $gencont_sh_url -o /tmp/_gencontinuous.new
   cp /tmp/_gencontinuous.new _gencontinuous.sh
+  chmod +x _gencontinuous.sh
   rm /tmp/_gencontinuous.new
 
   curl -L $gen_sh_url -o /tmp/_genonce.new
   cp /tmp/_genonce.new _genonce.sh
+  chmod +x _genonce.sh
   rm  /tmp/_genonce.new
 
   curl -L $update_sh_url -o /tmp/_updatePublisher.new
   cp /tmp/_updatePublisher.new _updatePublisher.sh
+  chmod +x _updatePublisher.sh
   rm /tmp/_updatePublisher.new
 fi
