@@ -13,17 +13,23 @@ jobs:
     container: hl7fhir/ig-publisher-base    # use ig publisher base image
     strategy:
       matrix:
-        project: ['base'] # base has error ```This website does not have an entry in the layout rules in /tmp/web-root/run-20240228/publish-setup.json to publish the IG with Package Id 'hl7.fhir.au.base'"```
+        project: ['base'] # base has error 
     steps:
+
+    - name: Extract branch name
+      shell: bash
+      run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+      id: extract_branch
+  
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
-        
         
     - name: Checkout AU ${{matrix.project}} Repository
       uses: actions/checkout@v4
       with:
         repository: hl7au/au-fhir-${{matrix.project}}
         path: hl7au/au-fhir-${{matrix.project}}
+        ref: $extract_branch
 
     - name: Checkout IG History Template Repository
       uses: actions/checkout@v4
