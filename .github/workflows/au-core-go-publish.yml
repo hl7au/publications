@@ -1,4 +1,4 @@
-name: Au IG Profiles publish->go-publish
+name: Au Core IG Profiles publish->go-publish
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
   pull_request:
     branches:
       - '*'
+  repository_dispatch:
+    types: [tag_created]
 
 jobs:
   build:
@@ -17,7 +19,12 @@ jobs:
     steps:
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
-        
+
+    - name: Configure AWS credentials from GitHub OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::966489602583:role/ghactions_publications_oidc
+        aws-region: ap-southeast-2
         
     - name: Checkout AU ${{matrix.project}} Repository
       uses: actions/checkout@v4
@@ -96,7 +103,7 @@ jobs:
         name: publish-output
         path: webroot/fhir/${{matrix.project}}
 
-    # - name: 📂 Sync files
+    # - name: 📂 Sync files # ftp is incredibly slow > 30 min sometimes, costing compute and efficency 
     #   uses: SamKirkland/FTP-Deploy-Action@v4.3.4
     #   with:
     #     server: ${{secrets.BUILD_SERVER}} # change to be env variable to support multiple environments later on
@@ -105,3 +112,6 @@ jobs:
     #     local-dir: au${{matrix.project}}/output/
     #     server-dir: /ig/hl7au/au-fhir-${{matrix.project}}/branches/${{ github.ref }}/gopublish/
     #     dry-run: true
+
+    - name: Upload artifacts to S3
+      run: aws s3 cp ./build s3://your-s3-bucket-name/path --recursive

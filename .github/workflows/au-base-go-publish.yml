@@ -1,4 +1,4 @@
-name: Au IG Profiles publish->go-publish
+name: Au Base IG Profiles publish->go-publish
 
 on:
   push:
