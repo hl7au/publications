@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build_core:
-    if: github.event.client_payload.repository == 'au-fhir-core'
+    if: github.event.client_payload.repository == "au-fhir-core"
     runs-on: ubuntu-latest
     container: hl7fhir/ig-publisher-base    # use ig publisher base image
     steps:
@@ -46,7 +46,7 @@ jobs:
     - name: Update Publisher
       run: |
         echo "Updating Publisher"
-        _updatePublisher.sh -f -y
+        ./_updatePublisher.sh -f -y
           
     - name: Basic Publish for Au Core
       run: |
