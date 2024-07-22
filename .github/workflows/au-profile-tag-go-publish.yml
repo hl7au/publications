@@ -125,6 +125,7 @@ jobs:
       with:
         repository: hl7au/au-fhir-base
         path: hl7au/au-fhir-base
+        ref: ${{ github.event.client_payload.tag }}
 
     - name: Checkout IG History Template Repository
       uses: actions/checkout@v4
@@ -173,7 +174,7 @@ jobs:
       run: |
         java -jar input-cache/publisher.jar -generate-package-registry webroot
 
-    - name: Run Aubase Publisher build
+    - name: Run Aubase Go Publisher build
       run:  java -jar ./input-cache/publisher.jar -go-publish -source ./hl7au/au-fhir-base -web ./webroot -history ./fhir-history -registry ./ig-registry/fhir-ig-list.json -templates ./templates -tx https://txreg.azurewebsites.net/txdev
 
     - name: List directories
@@ -187,5 +188,5 @@ jobs:
         path: webroot/fhir/base
 
     - name: Upload artifacts to S3
-      run: aws s3 cp ./build s3://hl7au-fhir-ig/base/${{ github.event.client_payload.tag }}  --recursive
+      run: aws s3 cp ./build s3://hl7au-fhir-ig/base/${{ github.event.client_payload.tag }}  --recursive --only-show-errors
       
