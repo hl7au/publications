@@ -1,117 +1,117 @@
-name: Au IG Profiles publish->go-publish
+# name: Au Base IG Profiles publish->go-publish
 
-on:
-  push:
-    branches: [ "base/**" ]
-  pull_request:
-    branches:
-      - '*'
+# on:
+#   push:
+#     branches: [ "base/**" ]
+#   pull_request:
+#     branches:
+#       - '*'
       
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    container: hl7fhir/ig-publisher-base    # use ig publisher base image
-    strategy:
-      matrix:
-        project: ['base'] # base has error 
-    steps:
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+#     container: hl7fhir/ig-publisher-base    # use ig publisher base image
+#     strategy:
+#       matrix:
+#         project: ['base'] # base has error 
+#     steps:
 
-    - name: Get branch names.
-      id: branch-names
-      uses: tj-actions/branch-names@v8
+#     - name: Get branch names.
+#       id: branch-names
+#       uses: tj-actions/branch-names@v8
   
-    - name: Running on a pull request branch.
-      if: steps.branch-names.outputs.is_default == 'false'
-      run: |
-        echo "Running on pr: ${{ steps.branch-names.outputs.current_branch }}"
+#     - name: Running on a pull request branch.
+#       if: steps.branch-names.outputs.is_default == 'false'
+#       run: |
+#         echo "Running on pr: ${{ steps.branch-names.outputs.current_branch }}"
   
-    - name: Checkout Publications Repository
-      uses: actions/checkout@v4
+#     - name: Checkout Publications Repository
+#       uses: actions/checkout@v4
         
-    - name: Checkout AU ${{matrix.project}} Repository
-      uses: actions/checkout@v4
-      with:
-        repository: hl7au/au-fhir-${{matrix.project}}
-        path: hl7au/au-fhir-${{matrix.project}}
-        ref: "4.2.0-preview"
+#     - name: Checkout AU ${{matrix.project}} Repository
+#       uses: actions/checkout@v4
+#       with:
+#         repository: hl7au/au-fhir-${{matrix.project}}
+#         path: hl7au/au-fhir-${{matrix.project}}
+#         ref: "4.2.0-preview"
 
-    - name: Checkout IG History Template Repository
-      uses: actions/checkout@v4
-      with:
-        repository: HL7/fhir-ig-history-template
-        path: fhir-history
+#     - name: Checkout IG History Template Repository
+#       uses: actions/checkout@v4
+#       with:
+#         repository: HL7/fhir-ig-history-template
+#         path: fhir-history
     
-    - name: Checkout IG Registry Repository
-      uses: actions/checkout@v4
-      with:
-        repository: hl7au/ig-registry
-        path: ig-registry
+#     - name: Checkout IG Registry Repository
+#       uses: actions/checkout@v4
+#       with:
+#         repository: hl7au/ig-registry
+#         path: ig-registry
 
 
-    # - name: Checkout AU ${{matrix.project}} Repository
-    #   run: |
-    #     git clone https://github.com/hl7au/au-fhir-${{matrix.project}}.git hl7au/au-fhir-${{matrix.project}}
-    #     git clone https://github.com/HL7/fhir-ig-history-template.git fhir-history
-    #     git clone https://github.com/hl7au/ig-registry.git ig-registry
+#     # - name: Checkout AU ${{matrix.project}} Repository
+#     #   run: |
+#     #     git clone https://github.com/hl7au/au-fhir-${{matrix.project}}.git hl7au/au-fhir-${{matrix.project}}
+#     #     git clone https://github.com/HL7/fhir-ig-history-template.git fhir-history
+#     #     git clone https://github.com/hl7au/ig-registry.git ig-registry
 
-    - name: Update Publisher
-      run: |
-        echo "Updating Publisher"
-        _updatePublisher.sh -f -y
+#     - name: Update Publisher
+#       run: |
+#         echo "Updating Publisher"
+#         _updatePublisher.sh -f -y
 
           
-    - name: Basic Publish for Au${{matrix.project}}
-      run: |
-          echo "Generating Publish for  Au${{matrix.project}} IG..."
-          java -jar input-cache/publisher.jar -ig hl7au/au-fhir-${{matrix.project}}/ig.ini -tx https://txreg.azurewebsites.net/txdev
+#     - name: Basic Publish for Au${{matrix.project}}
+#       run: |
+#           echo "Generating Publish for  Au${{matrix.project}} IG..."
+#           java -jar input-cache/publisher.jar -ig hl7au/au-fhir-${{matrix.project}}/ig.ini -tx https://txreg.azurewebsites.net/txdev
 
-    - name: Create directories
-      run: |
-        mkdir -p webroot/fhir/${{matrix.project}}
+#     - name: Create directories
+#       run: |
+#         mkdir -p webroot/fhir/${{matrix.project}}
 
-    - name: Download package-list.json
-      run: |
-        rm -rf hl7au/au-fhir-${{matrix.project}}/package-list.json
-        URL="https://hl7.org.au/fhir"
-        if [ "${{ matrix.project }}" == "base" ]; then
-          FULL_URL="$URL/package-list.json"
-        else
-          FULL_URL="$URL/${{ matrix.project }}/package-list.json"
-        fi
+#     - name: Download package-list.json
+#       run: |
+#         rm -rf hl7au/au-fhir-${{matrix.project}}/package-list.json
+#         URL="https://hl7.org.au/fhir"
+#         if [ "${{ matrix.project }}" == "base" ]; then
+#           FULL_URL="$URL/package-list.json"
+#         else
+#           FULL_URL="$URL/${{ matrix.project }}/package-list.json"
+#         fi
         
-        curl --output webroot/fhir/${{ matrix.project }}/package-list.json --url $FULL_URL
+#         curl --output webroot/fhir/${{ matrix.project }}/package-list.json --url $FULL_URL
 
-    - name: Download package-feed.xml
-      run: |
-        curl --output webroot/fhir/package-feed.xml --url https://hl7.org.au/fhir/package-feed.xml
+#     - name: Download package-feed.xml
+#       run: |
+#         curl --output webroot/fhir/package-feed.xml --url https://hl7.org.au/fhir/package-feed.xml
 
-    - name: Download publication-feed.xml
-      run: |
-        curl --output webroot/fhir/publication-feed.xml --url https://hl7.org.au/fhir/publication-feed.xml
+#     - name: Download publication-feed.xml
+#       run: |
+#         curl --output webroot/fhir/publication-feed.xml --url https://hl7.org.au/fhir/publication-feed.xml
 
-    - name: Generate Package Registry
-      run: |
-        java -jar input-cache/publisher.jar -generate-package-registry webroot
+#     - name: Generate Package Registry
+#       run: |
+#         java -jar input-cache/publisher.jar -generate-package-registry webroot
 
-    - name: Run Au${{matrix.project}} Publisher build
-      run:  java -jar ./input-cache/publisher.jar -go-publish -source ./hl7au/au-fhir-${{matrix.project}} -web ./webroot -history ./fhir-history -registry ./ig-registry/fhir-ig-list.json -templates ./templates -tx https://txreg.azurewebsites.net/txdev
+#     - name: Run Au${{matrix.project}} Publisher build
+#       run:  java -jar ./input-cache/publisher.jar -go-publish -source ./hl7au/au-fhir-${{matrix.project}} -web ./webroot -history ./fhir-history -registry ./ig-registry/fhir-ig-list.json -templates ./templates -tx https://txreg.azurewebsites.net/txdev
 
-    - name: List directories
-      run:  |
-        find . -type d
+#     - name: List directories
+#       run:  |
+#         find . -type d
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: publish-output
-        path: webroot/fhir/${{matrix.project}}
+#     - name: Upload Artifact
+#       uses: actions/upload-artifact@v3
+#       with:
+#         name: publish-output
+#         path: webroot/fhir/${{matrix.project}}
 
-    # - name: 📂 Sync files
-    #   uses: SamKirkland/FTP-Deploy-Action@v4.3.4
-    #   with:
-    #     server: ${{secrets.BUILD_SERVER}} # change to be env variable to support multiple environments later on
-    #     username: ${{ secrets.FTP_USER }}
-    #     password: ${{ secrets.FTP_PASSWORD }}
-    #     local-dir: au${{matrix.project}}/output/
-    #     server-dir: /ig/hl7au/au-fhir-${{matrix.project}}/branches/${{ github.ref }}/gopublish/
-    #     dry-run: true
+#     # - name: 📂 Sync files
+#     #   uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+#     #   with:
+#     #     server: ${{secrets.BUILD_SERVER}} # change to be env variable to support multiple environments later on
+#     #     username: ${{ secrets.FTP_USER }}
+#     #     password: ${{ secrets.FTP_PASSWORD }}
+#     #     local-dir: au${{matrix.project}}/output/
+#     #     server-dir: /ig/hl7au/au-fhir-${{matrix.project}}/branches/${{ github.ref }}/gopublish/
+#     #     dry-run: true

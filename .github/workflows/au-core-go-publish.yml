@@ -1,4 +1,4 @@
-name: Au IG Profiles publish->go-publish
+name: Au Core IG Profiles publish->go-publish
 
 on:
   push:
@@ -6,7 +6,14 @@ on:
   pull_request:
     branches:
       - '*'
+  repository_dispatch:
+    types: [tag_created]
 
+
+permissions:
+  id-token: write # This is required for requesting the JWT
+  contents: read  # This is required for actions/checkout
+  
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,7 +24,12 @@ jobs:
     steps:
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
-        
+
+    - name: Configure AWS credentials from GitHub OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::966489602583:role/ghactions_publications_oidc
+        aws-region: ap-southeast-2
         
     - name: Checkout AU ${{matrix.project}} Repository
       uses: actions/checkout@v4
@@ -37,7 +49,6 @@ jobs:
         repository: hl7au/ig-registry
         path: ig-registry
 
-
     # - name: Checkout AU ${{matrix.project}} Repository
     #   run: |
     #     git clone https://github.com/hl7au/au-fhir-${{matrix.project}}.git hl7au/au-fhir-${{matrix.project}}
@@ -47,13 +58,13 @@ jobs:
     - name: Update Publisher
       run: |
         echo "Updating Publisher"
-        _updatePublisher.sh -f -y
+        ./_updatePublisher.sh -f -y
 
           
     - name: Basic Publish for Au${{matrix.project}}
       run: |
           echo "Generating Publish for  Au${{matrix.project}} IG..."
-          java -jar input-cache/publisher.jar -ig hl7au/au-fhir-${{matrix.project}}/ig.ini -tx https://txreg.azurewebsites.net/txdev
+          java -jar input-cache/publisher.jar -ig hl7au/au-fhir-${{matrix.project}}/ig.ini
 
     - name: Create directories
       run: |
@@ -96,7 +107,7 @@ jobs:
         name: publish-output
         path: webroot/fhir/${{matrix.project}}
 
-    # - name: 📂 Sync files
+    # - name: 📂 Sync files # ftp is incredibly slow > 30 min sometimes, costing compute and efficency 
     #   uses: SamKirkland/FTP-Deploy-Action@v4.3.4
     #   with:
     #     server: ${{secrets.BUILD_SERVER}} # change to be env variable to support multiple environments later on
@@ -105,3 +116,6 @@ jobs:
     #     local-dir: au${{matrix.project}}/output/
     #     server-dir: /ig/hl7au/au-fhir-${{matrix.project}}/branches/${{ github.ref }}/gopublish/
     #     dry-run: true
+
+    - name: Upload artifacts to S3
+      run: aws s3 cp ./webroot s3://hl7au-fhir-ig/core --recursive
