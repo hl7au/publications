@@ -1,11 +1,6 @@
 name: Au Core IG Profiles publish->go-publish
 
 on:
-  push:
-    branches: [ "core/**" ]
-  pull_request:
-    branches:
-      - '*'
   repository_dispatch:
     types: [tag_created]
 
@@ -22,6 +17,15 @@ jobs:
       matrix:
         project: ['core'] # base has error ```This website does not have an entry in the layout rules in /tmp/web-root/run-20240228/publish-setup.json to publish the IG with Package Id 'hl7.fhir.au.base'"```
     steps:
+    - name: Echo payload
+      run: |
+        echo "Repo: ${{ github.event.client_payload.repository }}"
+        echo "Tag: ${{ github.event.client_payload.tag }}"
+        echo "Ref: ${{ github.event.client_payload.ref }}"
+        echo "Action: ${{ github.event.client_payload.action }}"
+        echo "Sender: ${{ github.event.client_payload.sender }}"
+        echo "Payload: ${{ github.event.client_payload }}"
+
     - name: Checkout Publications Repository
       uses: actions/checkout@v4
 
@@ -48,12 +52,6 @@ jobs:
       with:
         repository: hl7au/ig-registry
         path: ig-registry
-
-    # - name: Checkout AU ${{matrix.project}} Repository
-    #   run: |
-    #     git clone https://github.com/hl7au/au-fhir-${{matrix.project}}.git hl7au/au-fhir-${{matrix.project}}
-    #     git clone https://github.com/HL7/fhir-ig-history-template.git fhir-history
-    #     git clone https://github.com/hl7au/ig-registry.git ig-registry
 
     - name: Update Publisher
       run: |
