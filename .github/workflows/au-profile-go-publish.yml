@@ -4,6 +4,9 @@ name: Au IG Profiles Go Publish on Tag Creation
 on:
   repository_dispatch:
     types: [tag_created]
+  pull_request:
+    branches:
+      - '*'
 
 jobs:
   build:
