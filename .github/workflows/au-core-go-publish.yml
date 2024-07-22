@@ -59,7 +59,7 @@ jobs:
     - name: Update Publisher
       run: |
         echo "Updating Publisher"
-        _updatePublisher.sh -f -y
+        ./_updatePublisher.sh -f -y
 
           
     - name: Basic Publish for Au${{matrix.project}}
