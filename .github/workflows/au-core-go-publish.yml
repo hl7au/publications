@@ -52,9 +52,9 @@ jobs:
 
     # - name: Checkout AU ${{matrix.project}} Repository
     #   run: |
-    #     git clone https://github.com/hl7au/au-fhir-${{matrix.project}}.git hl7au/au-fhir-${{matrix.project}}
-    #     git clone https://github.com/HL7/fhir-ig-history-template.git fhir-history
-    #     git clone https://github.com/hl7au/ig-registry.git ig-registry
+        git clone https://github.com/hl7au/au-fhir-${{matrix.project}}.git hl7au/au-fhir-${{matrix.project}}
+        git clone https://github.com/HL7/fhir-ig-history-template.git fhir-history
+        git clone https://github.com/hl7au/ig-registry.git ig-registry
 
     - name: Update Publisher
       run: |
@@ -65,7 +65,7 @@ jobs:
     - name: Basic Publish for Au${{matrix.project}}
       run: |
           echo "Generating Publish for  Au${{matrix.project}} IG..."
-          java -jar input-cache/publisher.jar -ig hl7au/au-fhir-${{matrix.project}}/ig.ini -tx https://txreg.azurewebsites.net/txdev
+          java -jar input-cache/publisher.jar -ig hl7au/au-fhir-${{matrix.project}}/ig.ini
 
     - name: Create directories
       run: |

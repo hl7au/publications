@@ -59,7 +59,7 @@ jobs:
       - name: Basic Publish for AU IG
         run: |
           echo "Generating Publish for ${matrix.repo} IG..."
-          java -jar input-cache/publisher.jar -ig hl7au/${{ matrix.repo }}/ig.ini -tx https://txreg.azurewebsites.net/txdev
+          java -jar input-cache/publisher.jar -ig hl7au/${{ matrix.repo }}/ig.ini
 
       - name: Create directories
         run: |
