@@ -20,7 +20,7 @@ rem mkdir %CD%\webroot\fhir\ereq
 rem curl.exe --output %CD%\webroot\fhir\core\package-list.json --url https://hl7.org.au/fhir/ereq/package-list.json
 
 rem mkdir %CD%\webroot\fhir\base
-curl.exe --output %CD%\webroot\fhir\package-list.json --url https://hl7.org.au/fhir/package-list.json
+curl.exe --output %CD%\webroot\fhir\base\package-list.json --url https://hl7.org.au/fhir/package-list.json
 curl.exe --output %CD%\webroot\fhir\package-feed.xml --url https://hl7.org.au/fhir/package-feed.xml
 curl.exe --output %CD%\webroot\fhir\publication-feed.xml --url https://hl7.org.au/fhir/publication-feed.xml
 
