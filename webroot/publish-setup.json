@@ -23,7 +23,7 @@
 		{
 			"npm" : "hl7.fhir.au.base",
 			"canonical" : "http://hl7.org.au/fhir",
-			"destination" : "/fhir/base"
+			"destination" : "/fhir"
 		}
 	]
 }
