@@ -3,7 +3,8 @@
       "style" : "fhir.layout",
       "url" : "http://hl7.org.au",
       "server" : "apache",
-      "org" : "HL7 AU"
+      "org" : "HL7 AU",
+       "clone-xml-json": false
     },
     "feeds" : {
 		"package" : "fhir/package-feed.xml",
