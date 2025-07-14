@@ -8,19 +8,22 @@ rem del %CD%\hl7au\au-fhir-core\package-list.json
 rem git clone -b ft-cicd https://github.com/hl7au/au-fhir-erequesting %CD%\hl7au\au-fhir-erequesting
 rem del %CD%\hl7au\au-fhir-erequesting\package-list.json
 
-git clone -b 5.0.0 https://github.com/hl7au/au-fhir-base %CD%\hl7au\au-fhir-base
+git clone -b 6.0.0-preview https://github.com/hl7au/au-fhir-base %CD%\hl7au\au-fhir-base
 del %CD%\hl7au\au-fhir-base\package-list.json
 
 mkdir %CD%\webroot\fhir
+
+
+rem aws s3 cp s3://hl7au-fhir-ig/fhir %CD%/webroot/fhir --recursive --exclude "*" --include "*/package.tgz"
+aws s3 cp s3://hl7au-fhir-ig/fhir %CD%/webroot/fhir --recursive --include "*"
 
 rem mkdir %CD%\webroot\fhir\core
 rem curl.exe --output %CD%\webroot\fhir\core\package-list.json --url https://hl7.org.au/fhir/core/package-list.json
 
 rem mkdir %CD%\webroot\fhir\ereq
-rem curl.exe --output %CD%\webroot\fhir\core\package-list.json --url https://hl7.org.au/fhir/ereq/package-list.json
+rem curl.exe --output %CD%\webroot\fhir\ereq\package-list.json --url https://hl7.org.au/fhir/ereq/package-list.json
 
-rem mkdir %CD%\webroot\fhir\base
-curl.exe --output %CD%\webroot\fhir\base\package-list.json --insecure --url https://hl7.org.au/fhir/package-list.json
+curl.exe --output %CD%\webroot\fhir\package-list.json --insecure --url https://hl7.org.au/fhir/package-list.json
 curl.exe --output %CD%\webroot\fhir\package-feed.xml  --insecure --url https://hl7.org.au/fhir/package-feed.xml
 curl.exe --output %CD%\webroot\fhir\publication-feed.xml  --insecure --url https://hl7.org.au/fhir/publication-feed.xml
 
