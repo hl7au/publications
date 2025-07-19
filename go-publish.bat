@@ -11,6 +11,9 @@ rem del %CD%\hl7au\au-fhir-erequesting\package-list.json
 git clone -b 6.0.0-preview https://github.com/hl7au/au-fhir-base %CD%\hl7au\au-fhir-base
 del %CD%\hl7au\au-fhir-base\package-list.json
 
+mkdir %CD%\webroot
+cp publish-setup.json webroot
+
 mkdir %CD%\webroot\fhir
 
 
