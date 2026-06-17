@@ -14,11 +14,12 @@ Encryption is left unmanaged (S3 default AES256). The bucket carries `prevent_de
 ## Files
 | File | Purpose |
 |------|---------|
-| `versions.tf` | Terraform/provider versions; S3 backend (commented until the state bucket exists) |
+| `versions.tf` | Terraform/provider versions; S3 remote backend |
 | `providers.tf` | AWS provider |
 | `locals.tf` | distribution id, origin, aliases, cert ARN, cache policy, ordered path patterns |
 | `main.tf` | `aws_cloudfront_function.fhir_canonical` + `aws_cloudfront_distribution.site` |
 | `bucket.tf` | content-bucket settings: bucket, website config, versioning, public-access-block, ownership, policy |
+| `iam.tf` | `ghactions_publications_oidc` role + inline policies (scoped S3 + CloudFront); OIDC provider referenced |
 | `fhir-canonical.js` | function source — **source of truth** for the routing logic |
 
 ## What the function does
@@ -66,16 +67,15 @@ State currently lives locally. Before the pipeline can work:
    `hl7au-publications-tfstate-ap-southeast-2`.
 2. Uncomment the `backend "s3"` block in `versions.tf`.
 3. `terraform init -migrate-state` (moves the current local state to S3).
-4. Extend the `ghactions_publications_oidc` role with the permissions below.
+### IAM (now managed in `iam.tf`)
+The reused `ghactions_publications_oidc` role and its inline policies are managed by Terraform:
+- `publications-s3-scoped`: `s3:*` restricted to the content bucket (`hl7au-fhir-ig`) and the
+  Terraform state bucket only — replaced the former broad `AmazonS3FullAccess`.
+- `publications-infra-cloudfront`: least-privilege CloudFront actions for the function/distribution.
 
-### Required IAM permissions (added to the reused OIDC role)
-- CloudFront: `GetDistribution*`, `UpdateDistribution`, `GetFunction`, `DescribeFunction`,
-  `UpdateFunction`, `PublishFunction` (and `CreateInvalidation` if ever needed).
-- S3 content bucket settings (`arn:aws:s3:::hl7au-fhir-ig`): `GetBucket*`/`PutBucket*`,
-  `GetBucketPolicy`/`PutBucketPolicy`, `Get/PutBucketVersioning`, `Get/PutBucketPublicAccessBlock`,
-  `Get/PutBucketOwnershipControls`, `Get/PutBucketWebsite`.
-- State bucket: `s3:ListBucket` on the bucket and `s3:GetObject`/`PutObject`/`DeleteObject` on
-  `cloudfront/terraform.tfstate` (+ the `.tflock` lock object for native locking).
+The role is shared (trusted by `repo:hl7au/*`) and carries `prevent_destroy`. Its `manual = "true"`
+tag is preserved as-is from before adoption (flip later if desired). The GitHub OIDC provider is
+referenced (`data` source), not managed.
 
 ## Credentials
 Resources are global (CloudFront); the provider region is incidental, but the ACM cert is in
