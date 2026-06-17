@@ -1,53 +1,62 @@
 function handler(event) {
     var request = event.request;
+    var host = request.headers.host.value;
 
     var origUri = request.uri;
-
-    var headers = request.headers;
-
-    var newUri = "/";
-
-    if (origUri[origUri.length - 1] == "/")
+    if (origUri.length > 1 && origUri[origUri.length - 1] === "/") {
         origUri = origUri.substring(0, origUri.length - 1);
-
-    var pp = request.uri.split("/");
-    for (var i = 1; i < pp.length - 2; i++) {
-        newUri += pp[i] + "/";
     }
 
+    var pp = request.uri.split("/");
+    var lastSeg = pp[pp.length - 1];
 
-    if (pp[pp.length - 1] == "" || pp[pp.length - 1] == "core" || pp[pp.length - 1] == "ereq" || pp[pp.length - 1] == "fhir") {
+    // roots / directories -> let the origin serve index.html
+    if (lastSeg === "" || lastSeg === "core" || lastSeg === "ereq" || lastSeg === "fhir") {
         return request;
     }
 
-    if (event.request.headers.host.value == "terminology.hl7.org.au") {
-        var ttype = pp[pp.length - 2];
-        var tid = pp[pp.length - 1];
+    var rt = pp[pp.length - 2];
 
-        // erquesting naming convention used to locate lastest version of the artefact
-        if (tid.indexOf("au-erequesting") == 0)
-            newUri = "https://hl7.org.au/fhir/ereq/" + ttype + "/" + tid;     // AU eRequesting terminology
-        else
-            newUri = "https://hl7.org.au/fhir/" + ttype + "/" + tid;   // AU Base terminology
-
-        //newUri = "https://tx.hl7.org.au/fhir/" + ttype + "?url=http://terminology.hl7.org.au" + origUri;
-    }
-    else if (pp[pp.length - 2] == "CapabilityStatement" || pp[pp.length - 2] == "StructureDefinition" || pp[pp.length - 2] == "ValueSet" || pp[pp.length - 2] == "CodeSystem") {
-        newUri += (pp[pp.length - 2] + "-" + pp[pp.length - 1]);
-        newUri += ".html";
+    // base = everything except the last two segments (handles sub-IGs, e.g. /fhir/core/...)
+    var base = "/";
+    for (var i = 1; i < pp.length - 2; i++) {
+        base += pp[i] + "/";
     }
 
-    else {
-        newUri = origUri + "/index.html";
+    // terminology.hl7.org.au: the artifacts live under hl7.org.au/fhir -> cross-host redirect
+    if (host === "terminology.hl7.org.au") {
+        var tbase = (lastSeg.indexOf("au-erequesting") === 0) ? "/fhir/ereq/" : "/fhir/";
+        return redirect("https://hl7.org.au" + tbase + rt + "/" + lastSeg);
     }
-    
-    var response = {
+
+    // versioned canonical: <RT>/<id>|<version>  (raw "|" or url-encoded "%7C")
+    // -> that version's publication folder (/fhir/<version>/...). Targets already exist;
+    // version string must match the folder name (true for all semver-style releases).
+    var sep = lastSeg.indexOf("|");
+    var sepLen = 1;
+    if (sep === -1) { sep = lastSeg.indexOf("%7C"); sepLen = 3; }
+    if (sep === -1) { sep = lastSeg.indexOf("%7c"); sepLen = 3; }
+    if (sep > -1) {
+        var rid = lastSeg.substring(0, sep);
+        var rver = lastSeg.substring(sep + sepLen);
+        var vTarget = base + rver + "/" +
+            (rt === "ImplementationGuide" ? "index.html" : rt + "-" + rid + ".html");
+        return redirect(vTarget);
+    }
+
+    // unversioned conformance resources -> current-version page at the canonical root
+    if (rt === "CapabilityStatement" || rt === "StructureDefinition" || rt === "ValueSet" || rt === "CodeSystem") {
+        return redirect(base + rt + "-" + lastSeg + ".html");
+    }
+
+    // everything else -> directory index (static index.html stub from the IG publisher)
+    return redirect(origUri + "/index.html");
+}
+
+function redirect(location) {
+    return {
         statusCode: 302,
-        statusDescription: 'Found',
-        headers: {
-            "location": { "value": newUri }
-        }
+        statusDescription: "Found",
+        headers: { "location": { "value": location } }
     };
-    return response;
-
 }
