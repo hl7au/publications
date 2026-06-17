@@ -1,10 +1,7 @@
 # GitHub Actions OIDC role used by the publications repos to publish IG content and
 # (via this Terraform) manage the serving infrastructure. Shared/broadly-trusted
-# (repo:hl7au/*), so it carries prevent_destroy. The OIDC provider is referenced, not managed.
-data "aws_iam_openid_connect_provider" "github" {
-  url = "https://token.actions.githubusercontent.com"
-}
-
+# (repo:hl7au/*), so it carries prevent_destroy. The OIDC provider is referenced by ARN
+# (not via a data source, so the pipeline does not need iam:ListOpenIDConnectProviders).
 resource "aws_iam_role" "ghactions_publications_oidc" {
   name        = "ghactions_publications_oidc"
   description = "A github actions oidc role for the publications repo to allow publishing of IG profiles to s3 buckets."
@@ -14,7 +11,7 @@ resource "aws_iam_role" "ghactions_publications_oidc" {
     Statement = [
       {
         Effect    = "Allow"
-        Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
+        Principal = { Federated = local.oidc_provider_arn }
         Action    = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
@@ -31,6 +28,34 @@ resource "aws_iam_role" "ghactions_publications_oidc" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# Read-only access to its OWN role so Terraform can refresh/plan the IAM resources.
+# Deliberately NO write actions (PutRolePolicy/UpdateRole/...): the CI role cannot rewrite
+# its own permissions, so a merged change can't silently escalate it. IAM *changes* therefore
+# need a privileged manual `terraform apply`; steady-state plan/apply works with read-only.
+resource "aws_iam_role_policy" "publications_infra_iam" {
+  name = "publications-infra-iam-read"
+  role = aws_iam_role.ghactions_publications_oidc.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadOwnRoleForTerraform"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:ListRolePolicies",
+          "iam:GetRolePolicy",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListInstanceProfilesForRole",
+          "iam:ListRoleTags",
+        ]
+        Resource = local.oidc_role_arn
+      }
+    ]
+  })
 }
 
 # S3 access scoped to the content bucket + the Terraform state bucket only.

@@ -2,6 +2,10 @@ locals {
   # Distribution being adopted (hl7.org.au).
   distribution_id = "E2U6NB1JDLY5NT"
 
+  account_id        = "966489602583"
+  oidc_provider_arn = "arn:aws:iam::966489602583:oidc-provider/token.actions.githubusercontent.com"
+  oidc_role_arn     = "arn:aws:iam::966489602583:role/ghactions_publications_oidc"
+
   # Content bucket (settings managed here; objects are owned by the publish pipeline).
   content_bucket = "hl7au-fhir-ig"
 
