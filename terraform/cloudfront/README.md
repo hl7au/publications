@@ -5,7 +5,11 @@ Terraform configuration that adopts the existing production CloudFront distribut
 CloudFront Function `fhir-canonical`, which routes canonical FHIR URLs.
 
 The distribution origin is the S3 *website* endpoint `hl7au-fhir-ig.s3-website-ap-southeast-2.amazonaws.com`.
-The content bucket and the ACM certificate are **referenced, not managed** here.
+The ACM certificate is **referenced, not managed** here.
+
+The content bucket's **settings** are managed (see `bucket.tf`); its **objects are not** — published
+IG content is written by the publish pipeline and the canonical-redirect backfill, never by Terraform.
+Encryption is left unmanaged (S3 default AES256). The bucket carries `prevent_destroy = true`.
 
 ## Files
 | File | Purpose |
@@ -14,6 +18,7 @@ The content bucket and the ACM certificate are **referenced, not managed** here.
 | `providers.tf` | AWS provider |
 | `locals.tf` | distribution id, origin, aliases, cert ARN, cache policy, ordered path patterns |
 | `main.tf` | `aws_cloudfront_function.fhir_canonical` + `aws_cloudfront_distribution.site` |
+| `bucket.tf` | content-bucket settings: bucket, website config, versioning, public-access-block, ownership, policy |
 | `fhir-canonical.js` | function source — **source of truth** for the routing logic |
 
 ## What the function does

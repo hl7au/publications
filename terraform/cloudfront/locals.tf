@@ -2,6 +2,9 @@ locals {
   # Distribution being adopted (hl7.org.au).
   distribution_id = "E2U6NB1JDLY5NT"
 
+  # Content bucket (settings managed here; objects are owned by the publish pipeline).
+  content_bucket = "hl7au-fhir-ig"
+
   # S3 *website* endpoint used as a custom origin (not an OAC/S3 origin).
   origin_id     = "hl7au-fhir-ig.s3-website-ap-southeast-2.amazonaws.com"
   origin_domain = "hl7au-fhir-ig.s3-website-ap-southeast-2.amazonaws.com"
