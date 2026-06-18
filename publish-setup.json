@@ -2,9 +2,10 @@
     "website" : {
       "style" : "fhir.layout",
       "url" : "http://hl7.org.au",
-      "server" : "apache",
+      "server" : "cloud",
       "org" : "HL7 AU",
-       "clone-xml-json": false
+       "clone-xml-json": false,
+       "dynamic-publish-box": true
     },
     "feeds" : {
 		"package" : "fhir/package-feed.xml",
