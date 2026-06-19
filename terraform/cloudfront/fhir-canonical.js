@@ -7,7 +7,7 @@ function handler(event) {
         origUri = origUri.substring(0, origUri.length - 1);
     }
 
-    var pp = request.uri.split("/");
+    var pp = origUri.split("/");  // split the trailing-slash-stripped uri so a trailing slash behaves like no slash
     var lastSeg = pp[pp.length - 1];
 
     // roots / directories -> let the origin serve index.html
