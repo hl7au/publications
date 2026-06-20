@@ -121,14 +121,33 @@ jobs:
         uses: actions/checkout@v4
         with: { repository: hl7au/ig-registry, path: ig-registry }
 
-      - name: Download combined IG Publisher jar (temporary — until the 5 PRs merge)
+      # TEMP: until the opt-in publisher changes merge upstream and ship in a release, use the combined
+      # jar (KyleOps release). It lives behind a MUTABLE tag, so the cache key is the asset's ETag,
+      # resolved AFTER following the release redirect (-L) — when KyleOps re-publishes the tag the ETag
+      # changes and the cache refreshes automatically. If the ETag can't be resolved we skip the cache
+      # and just download (no stale-jar trap). Revert to `./_updatePublisher.sh -f -y` once upstream ships.
+      - name: Resolve combined publisher.jar ETag (cache key)
+        id: jarver
+        run: |
+          etag=$(curl -sSIL "$PUBLISHER_JAR_URL" | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}' | tail -1 | tr -d '"')
+          echo "etag=${etag:-none}" >> "$GITHUB_OUTPUT"
+          echo "combined publisher.jar ETag: ${etag:-none}"
+      - name: Cache combined publisher.jar (keyed on its ETag)
+        if: steps.jarver.outputs.etag != 'none'
+        uses: actions/cache@v4
+        with:
+          path: ig-src/input-cache/publisher.jar
+          key: pubjar-${{ steps.jarver.outputs.etag }}
+      - name: Download combined publisher.jar (only if not restored from cache)
         working-directory: ig-src
         run: |
-          # TEMP: until the opt-in publisher changes merge upstream and ship in a release, use the
-          # combined jar. Revert to `./_updatePublisher.sh -f -y` once they're in the released jar.
           mkdir -p input-cache
-          curl -sSL -o input-cache/publisher.jar "$PUBLISHER_JAR_URL"
-          echo "publisher.jar: $(du -h input-cache/publisher.jar | cut -f1)"
+          if [ -s input-cache/publisher.jar ]; then
+            echo "publisher.jar restored from cache: $(du -h input-cache/publisher.jar | cut -f1)"
+          else
+            curl -sSL -o input-cache/publisher.jar "$PUBLISHER_JAR_URL"
+            echo "publisher.jar downloaded: $(du -h input-cache/publisher.jar | cut -f1)"
+          fi
 
       # Persist the FHIR package cache across runs so the render doesn't re-download packages each time.
       # Keyed on the IG's dependency declarations (ig.xml dependsOn + ig.ini); restore-keys falls back
@@ -141,6 +160,20 @@ jobs:
           key: fhir-pkgcache-v1-${{ hashFiles('ig-src/input/ig.xml', 'ig-src/ig.ini') }}
           restore-keys: fhir-pkgcache-v1-
 
+      # Persist the TERMINOLOGY cache across runs. The AU template points the publisher at
+      # input-cache/txcache (path-tx-cache); there is no CLI flag for it, so we cache that folder in
+      # place. Terminology validation against tx.fhir.org is the dominant phase of the build, so a warm
+      # txcache removes most repeat round-trips. The run_id suffix makes every run save a fresh snapshot
+      # (cache keys are immutable); restore-keys pulls the most recent prior cache to seed it.
+      - name: Cache terminology cache (txcache) across runs
+        uses: actions/cache@v4
+        with:
+          path: ig-src/input-cache/txcache
+          key: txcache-v1-${{ hashFiles('ig-src/input/ig.xml', 'ig-src/ig.ini') }}-${{ github.run_id }}
+          restore-keys: |
+            txcache-v1-${{ hashFiles('ig-src/input/ig.xml', 'ig-src/ig.ini') }}-
+            txcache-v1-
+
       - name: Render IG in publication mode (reused by both go-publish runs via -reuse-build, lever C)
         id: render
         working-directory: ig-src
@@ -152,6 +185,10 @@ jobs:
           PUBPATH=$(grep -o '"path"[^,}]*' publication-request.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
           echo "Publication path: $PUBPATH"
           echo "ver=${PUBPATH##*/}" >> "$GITHUB_OUTPUT"   # version folder name, for preview deep-links
+          # Cross-version comparison runs on every render (the IG's version-comparison-master parameter,
+          # or {last} if unset). Measured cost on the current jar: ~10s and 0 errors/warnings, so the
+          # diff is available in both the working and milestone previews as a review aid. (The old belief
+          # that it was slow/noisy was the stale 2.0.x jar + a stale comparison-v* output dir.)
           java -jar input-cache/publisher.jar -ig . -publish "$PUBPATH" \
             -package-cache-folder "$GITHUB_WORKSPACE/.fhir-cache" -tx "$TX_SERVER"
 
