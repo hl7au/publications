@@ -1,0 +1,365 @@
+name: IG build → working+milestone previews → gated publish (reusable)
+
+# CENTRALIZED, reusable (workflow_call) pipeline for the AU FHIR IGs. ONE source of truth lives here
+# in hl7au/publications; each IG repo (au-fhir-base, au-fhir-ps, au-fhir-core) carries only a thin
+# caller stub that forwards its push/PR/tag/dispatch events to this workflow. This replaces the
+# per-repo copies of build-review-publish.yml that had begun to drift (S3 vs GitHub Pages previews;
+# the history-asset seeding fix present in only one; inconsistent package-registry.json handling).
+#
+# WHAT IT DOES: renders the IG ONCE (publication mode), then runs go-publish TWICE off that single
+# render (-reuse-build → the 2nd is ~100s, not another render) to produce BOTH a WORKING and a
+# MILESTONE build; deploys both side-by-side as a per-branch S3 preview; and (gated) publishes to
+# prod S3. github.* context inside this workflow reflects the CALLER's triggering event.
+#
+# PER-IG PARAMETER — `subtree`:
+#   - ""          → this IG owns the /fhir ROOT (au-base). Syncs out/<mode>/fhir → s3://<bucket>/fhir.
+#   - "ps"/"core" → this IG owns only /fhir/<subtree>. Syncs that subtree, PLUS the SHARED root files
+#                   it read-modify-wrote (the /fhir feeds + the web-root package-registry.json),
+#                   uploaded INDIVIDUALLY — never a blanket /fhir sync (that would clobber the root
+#                   owner's history.html / package-list.json / index.html).
+#   Shared root files are seeded from the LIVE prod copies, so go-publish inserts this IG's entry and
+#   the sibling IGs' entries survive. All uploads are additive — never --delete.
+#
+# DEPLOY TARGETS (current approval state — see publications/terraform/cloudfront + docs):
+#   - previews S3 bucket (hl7au-fhir-ig-previews): CI-writable NOW. Per-branch previews land here.
+#   - prod (hl7au-fhir-ig): the publish jobs are GATED on the caller repo's `production` environment
+#     (required reviewers; deployment-branch rule = master + v* tags). Built but dormant until approved.
+#   - previews.hl7.org.au DNS: not live yet — the URL report leads with the working S3 website
+#     endpoint and prints the (pending) previews.hl7.org.au URL labelled "not live yet".
+#
+# TEMP: fetches the combined custom publisher.jar (KyleOps/fhir-ig-publisher release au-pipeline-combined:
+# #1327 cloud redirects + A2 dynamic publish-box/page-versions + skip-version-tree + A3 source viewers +
+# lever C -reuse-build) until those changes ship upstream — then revert to ./_updatePublisher.sh -f -y.
+
+on:
+  workflow_call:
+    inputs:
+      subtree:
+        description: 'IG path under /fhir. "" = owns the /fhir root (au-base); "ps"/"core" = subtree owner.'
+        type: string
+        required: false
+        default: ""
+      ref:
+        description: "Tag/branch of the IG repo to build (dispatch only; empty = the triggering commit)."
+        type: string
+        required: false
+        default: ""
+      publish_milestone:
+        description: "Promote the MILESTONE build to prod S3 (becomes 'current'; gated by production env)."
+        type: boolean
+        default: false
+      publish_working:
+        description: "Publish the WORKING build to prod S3 (versioned snapshot, NOT current; gated)."
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write   # OIDC → AWS (previews sync + gated prod publish)
+  contents: read
+
+concurrency:
+  group: ig-publish-${{ github.repository }}   # serialise each IG against itself; siblings independent
+  cancel-in-progress: false
+
+env:
+  PUBLISHER_JAR_URL: https://github.com/KyleOps/fhir-ig-publisher/releases/download/au-pipeline-combined/publisher.jar
+  PUBLICATIONS_REPO: hl7au/publications          # publish-setup.json + templates/ (config on master)
+  PUBLICATIONS_REF: master
+  TX_SERVER: https://tx.fhir.org
+  PROD_BUCKET: hl7au-fhir-ig
+  PREVIEWS_BUCKET: hl7au-fhir-ig-previews
+  AWS_ROLE: arn:aws:iam::966489602583:role/ghactions_publications_oidc
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: hl7fhir/ig-publisher-base
+    outputs:
+      slug: ${{ steps.meta.outputs.slug }}
+      ver: ${{ steps.render.outputs.ver }}
+      own: ${{ steps.meta.outputs.own }}
+    steps:
+      - name: Compute build label (branch / pr-N / tag / dispatch ref) + owned path
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            slug="pr-${{ github.event.pull_request.number }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            slug="${{ inputs.ref }}"
+          else
+            slug="${{ github.ref_name }}"
+          fi
+          slug=$(echo "$slug" | tr '/' '-' | tr -cd 'A-Za-z0-9._-')
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          own="fhir"; [ -n "${{ inputs.subtree }}" ] && own="fhir/${{ inputs.subtree }}"
+          echo "own=$own" >> "$GITHUB_OUTPUT"
+          echo "Build label: $slug · owned path: /$own"
+
+      - name: Checkout IG source (the calling repo)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          path: ig-src
+
+      - name: Checkout publish-setup.json + templates (sparse, from publications)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PUBLICATIONS_REPO }}
+          ref: ${{ env.PUBLICATIONS_REF }}
+          path: publications
+          sparse-checkout: |
+            publish-setup.json
+            templates
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout history template (go-publish -history)
+        uses: actions/checkout@v4
+        with: { repository: HL7/fhir-ig-history-template, path: fhir-history }
+
+      - name: Checkout IG registry (go-publish -registry)
+        uses: actions/checkout@v4
+        with: { repository: hl7au/ig-registry, path: ig-registry }
+
+      - name: Download combined IG Publisher jar (temporary — until the 5 PRs merge)
+        working-directory: ig-src
+        run: |
+          # TEMP: until the opt-in publisher changes merge upstream and ship in a release, use the
+          # combined jar. Revert to `./_updatePublisher.sh -f -y` once they're in the released jar.
+          mkdir -p input-cache
+          curl -sSL -o input-cache/publisher.jar "$PUBLISHER_JAR_URL"
+          echo "publisher.jar: $(du -h input-cache/publisher.jar | cut -f1)"
+
+      # Persist the FHIR package cache across runs so the render doesn't re-download packages each time.
+      # Keyed on the IG's dependency declarations (ig.xml dependsOn + ig.ini); restore-keys falls back
+      # to the latest cache and the render just adds anything new. NOTE: only the -ig render honors
+      # -package-cache-folder; go-publish ignores it, but -reuse-build makes go-publish skip the render.
+      - name: Cache FHIR packages (speeds up the render)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.fhir-cache
+          key: fhir-pkgcache-v1-${{ hashFiles('ig-src/input/ig.xml', 'ig-src/ig.ini') }}
+          restore-keys: fhir-pkgcache-v1-
+
+      - name: Render IG in publication mode (reused by both go-publish runs via -reuse-build, lever C)
+        id: render
+        working-directory: ig-src
+        run: |
+          # Render once, to the final publish path, so the output is publishable and BOTH go-publish
+          # runs below can adopt it (no re-render). Path (not mode) drives the reuse match, so flipping
+          # mode for each preview below still reuses this one render.
+          mkdir -p "$GITHUB_WORKSPACE/.fhir-cache"
+          PUBPATH=$(grep -o '"path"[^,}]*' publication-request.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
+          echo "Publication path: $PUBPATH"
+          echo "ver=${PUBPATH##*/}" >> "$GITHUB_OUTPUT"   # version folder name, for preview deep-links
+          java -jar input-cache/publisher.jar -ig . -publish "$PUBPATH" \
+            -package-cache-folder "$GITHUB_WORKSPACE/.fhir-cache" -tx "$TX_SERVER"
+
+      # Seed a lean -web mirror (a few MB, not the 15GB tree): the OWNED path's own package-list.json
+      # plus the SHARED root files go-publish read-modify-writes. Seeded from the LIVE prod copies so a
+      # sibling IG's feed/registry entries survive this independent publish. See docs/build-pipeline.md.
+      - name: Seed lean -web template (owned package-list + shared root files — no 15GB sync)
+        run: |
+          own="${{ steps.meta.outputs.own }}"
+          mkdir -p "web-seed/$own"
+          cp publications/publish-setup.json web-seed/publish-setup.json
+          # the owned path's own package-list.json (/fhir for the root owner, /fhir/<subtree> otherwise)
+          curl -sS -o "web-seed/$own/package-list.json" "https://hl7.org.au/$own/package-list.json"
+          # SHARED root files (read-modify-written by go-publish) — always seeded from live prod
+          curl -sS -o web-seed/fhir/package-feed.xml      https://hl7.org.au/fhir/package-feed.xml
+          curl -sS -o web-seed/fhir/publication-feed.xml  https://hl7.org.au/fhir/publication-feed.xml
+          curl -sS -o web-seed/package-registry.json      https://hl7.org.au/package-registry.json || true
+          # publisher requires the source to NOT contain package-list.json
+          rm -f ig-src/package-list.json
+
+      # Both previews ADOPT the single render above (-reuse-build → no re-render), so each go-publish is
+      # ~100s. The publication-request mode is forced per run so the previews are consistent regardless
+      # of what's committed. ABSOLUTE paths required (IGReleaseRedirectionBuilder substrings the
+      # web-root prefix off the version dest folder; a relative path throws StringIndexOutOfBounds).
+      - name: Build WORKING preview (go-publish, mode=working, -reuse-build)
+        run: |
+          node -e 'const fs=require("fs");const p="ig-src/publication-request.json";const d=JSON.parse(fs.readFileSync(p,"utf8"));d.mode="working";fs.writeFileSync(p,JSON.stringify(d,null,2));'
+          cp -a web-seed webroot-working
+          java -jar "$GITHUB_WORKSPACE/ig-src/input-cache/publisher.jar" -go-publish -reuse-build \
+            -source "$GITHUB_WORKSPACE/ig-src" -web "$GITHUB_WORKSPACE/webroot-working" \
+            -history "$GITHUB_WORKSPACE/fhir-history" -registry "$GITHUB_WORKSPACE/ig-registry/fhir-ig-list.json" \
+            -templates "$GITHUB_WORKSPACE/publications/templates" -temp "$GITHUB_WORKSPACE/temp-working" \
+            -tx "$TX_SERVER"
+          mkdir -p preview/working && mv webroot-working/fhir preview/working/fhir
+          # package-registry.json lives at the WEB ROOT (outside fhir/). Carry it into the preview tree
+          # so the publish job can upload it — it is a shared root file every IG read-modify-writes.
+          [ -f webroot-working/package-registry.json ] && cp webroot-working/package-registry.json preview/working/package-registry.json || true
+
+      - name: Build MILESTONE preview (go-publish, mode=milestone, -reuse-build)
+        continue-on-error: true   # review aid — a hiccup here must not block previews or the publish
+        run: |
+          # Force milestone + trial-use (AU milestones are the R-numbered trial-use "current"). Same
+          # publish path → -reuse-build still adopts the one render. Throwaway -web; affects nothing.
+          node -e 'const fs=require("fs");const p="ig-src/publication-request.json";const d=JSON.parse(fs.readFileSync(p,"utf8"));d.mode="milestone";d.status="trial-use";fs.writeFileSync(p,JSON.stringify(d,null,2));'
+          cp -a web-seed webroot-milestone
+          java -jar "$GITHUB_WORKSPACE/ig-src/input-cache/publisher.jar" -go-publish -reuse-build \
+            -source "$GITHUB_WORKSPACE/ig-src" -web "$GITHUB_WORKSPACE/webroot-milestone" \
+            -history "$GITHUB_WORKSPACE/fhir-history" -registry "$GITHUB_WORKSPACE/ig-registry/fhir-ig-list.json" \
+            -templates "$GITHUB_WORKSPACE/publications/templates" -temp "$GITHUB_WORKSPACE/temp-milestone" \
+            -tx "$TX_SERVER"
+          mkdir -p preview/milestone && mv webroot-milestone/fhir preview/milestone/fhir
+          [ -f webroot-milestone/package-registry.json ] && cp webroot-milestone/package-registry.json preview/milestone/package-registry.json || true
+
+      - name: Package previews (working + milestone) as tar.gz
+        run: |
+          # No preview-only redirect added here — this same artifact feeds the publish jobs, which must
+          # NOT carry a fabricated index.html. The redirect is added in the preview-s3 job only.
+          tar -czf "$GITHUB_WORKSPACE/preview-${{ steps.meta.outputs.slug }}.tar.gz" -C preview .
+          echo "Archived $(du -h "$GITHUB_WORKSPACE/preview-${{ steps.meta.outputs.slug }}.tar.gz" | cut -f1)"
+
+      - name: Upload review artifact (working + milestone)
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-${{ steps.meta.outputs.slug }}
+          path: preview-${{ steps.meta.outputs.slug }}.tar.gz
+          retention-days: 14
+
+  # Per-branch / per-PR live PREVIEWS on the previews S3 bucket — BOTH the working and milestone
+  # renders. Synced to s3://hl7au-fhir-ig-previews/<slug>/{working,milestone}/ so branches coexist;
+  # stale previews auto-expire via the bucket's 30-day lifecycle rule. No canonical CloudFront
+  # function here: baked absolute hl7.org.au canonicals resolve to PROD, so this is good for "does it
+  # render / how does the milestone look", not for canonical/version redirects. The dynamic publish-box
+  # DOES resolve (its JS reads the preview's own package-list.json same-origin).
+  preview-s3:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built previews
+        uses: actions/download-artifact@v4
+        with: { name: "site-${{ needs.build.outputs.slug }}" }
+      - name: Checkout history template (its shared root assets — for the preview only)
+        uses: actions/checkout@v4
+        with: { repository: HL7/fhir-ig-history-template, path: fhir-history }
+      - name: Unpack previews + seed history assets + add preview-only redirects
+        run: |
+          mkdir -p preview && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C preview
+          ver="${{ needs.build.outputs.ver }}"
+          own="${{ needs.build.outputs.own }}"
+          for m in working milestone; do
+            d="preview/$m/$own"
+            [ -d "$d" ] || continue
+            # history.html references shared root assets (assets-hist/, dist-hist/, history.js, *.css …)
+            # that the lean build does NOT emit: go-publish's HistoryPageUpdater only copies them on a
+            # FIRST publish (delta=false), and these IGs aren't first — prod already has them. So copy
+            # them from the history template into the preview (PREVIEW-ONLY; the prod publish artifact
+            # stays clean). Without this, preview history.html 404s its CSS/JS and the table won't render.
+            cp -a fhir-history/assets-hist fhir-history/dist-hist "$d/" 2>/dev/null || true
+            cp -a fhir-history/history.js fhir-history/history-cm.js fhir-history/history.css \
+                  fhir-history/fhir.css fhir-history/jquery-ui.css fhir-history/jquery-ui.js \
+                  fhir-history/cc0.png "$d/" 2>/dev/null || true
+            # Root pages also reference assets/images|css|js = <owned>/assets/ — the CURRENT version's
+            # assets, which only a milestone copies up. Copy the built version's own assets up so those
+            # resolve (logos fhir-logo-www.png / hl7-logo.png live there). Self-contained — this build.
+            if [ -d "$d/$ver/assets" ] && [ ! -d "$d/assets" ]; then
+              cp -a "$d/$ver/assets" "$d/assets"
+            fi
+            # The lean build has no <owned>/index.html (the current-version landing isn't built here).
+            # Add a PREVIEW-ONLY redirect per mode so the bare …/<owned>/ URL lands on the new version.
+            if [ ! -f "$d/index.html" ]; then
+              printf '<!doctype html><meta http-equiv="refresh" content="0; url=%s/index.html"><a href="%s/index.html">%s</a>\n' \
+                "$ver" "$ver" "$ver" > "$d/index.html"
+            fi
+          done
+      - name: Configure AWS credentials from GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy previews to S3 (previews bucket)
+        run: |
+          # Per-branch preview at s3://<previews-bucket>/<slug>/{working,milestone}/...
+          # --delete is scoped to THIS slug's prefix only, so each branch's preview is self-clean and
+          # other branches are untouched. Stale branch previews auto-expire via the lifecycle rule.
+          aws s3 sync ./preview "s3://$PREVIEWS_BUCKET/${{ needs.build.outputs.slug }}/" \
+            --delete --only-show-errors
+      - name: Report preview URLs
+        run: |
+          slug="${{ needs.build.outputs.slug }}"
+          ver="${{ needs.build.outputs.ver }}"
+          own="${{ needs.build.outputs.own }}"
+          s3base="http://$PREVIEWS_BUCKET.s3-website-$AWS_REGION.amazonaws.com/$slug"
+          dnsbase="https://previews.hl7.org.au/$slug"
+          {
+            echo "### Previews (S3 — previews bucket)";
+            echo "| mode | new version | directory of versions |";
+            echo "|------|-------------|------------------------|";
+            echo "| **working** | $s3base/working/$own/$ver/index.html | $s3base/working/$own/history.html |";
+            echo "| **milestone** | $s3base/milestone/$own/$ver/index.html | $s3base/milestone/$own/history.html |";
+            echo "";
+            echo "_Working = the new version as a non-current preview. Milestone = the same version promoted to";
+            echo "current (publish box reads 'this is the current version'; old versions untouched via dynamic-publish-box)._";
+            echo "_Primary links use the S3 website endpoint (live now). Once the previews.hl7.org.au DNS is approved,";
+            echo "the same paths resolve under \`$dnsbase/working/$own/$ver/index.html\` (not live yet)._";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Promote the MILESTONE build to PROD — gated by the caller repo's `production` environment (required
+  # reviewers; deployment-branch rule = master + v* tags). Runs ONLY on a version-tag push or an explicit
+  # dispatch with publish_milestone=true.
+  publish-milestone:
+    needs: build   # not preview-s3: a preview hiccup must not block prod; the production env is the gate
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish_milestone) }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Download reviewed previews
+        uses: actions/download-artifact@v4
+        with: { name: "site-${{ needs.build.outputs.slug }}" }
+      - name: Configure AWS credentials from GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      # Additive — uploads the new (now-current) version dir (incl. full-ig.zip + npm package.tgz) + the
+      # regenerated owned-path root (history.html, package-list, redirects) + the shared root files this
+      # IG read-modify-wrote that fall OUTSIDE the owned sync. With dynamic-publish-box there are NO
+      # rewritten old-version files. Never --delete.
+      - name: Publish MILESTONE build to prod S3 (owned subtree + shared root files; additive)
+        run: |
+          own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
+          mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
+          test -d "out/milestone/$own" || { echo "::error::milestone build missing (the milestone step failed) — not publishing"; exit 1; }
+          # (a) the owned tree (root owner: /fhir incl. the feeds; subtree owner: just /fhir/<subtree>)
+          aws s3 sync "out/milestone/$own" "s3://$PROD_BUCKET/$own" --only-show-errors
+          # (b) for subtree owners, the /fhir feeds live ABOVE the owned sync — upload them individually
+          if [ -n "$sub" ]; then
+            aws s3 cp out/milestone/fhir/package-feed.xml      "s3://$PROD_BUCKET/fhir/package-feed.xml"      --only-show-errors
+            aws s3 cp out/milestone/fhir/publication-feed.xml  "s3://$PROD_BUCKET/fhir/publication-feed.xml"  --only-show-errors
+          fi
+          # (c) package-registry.json is at the WEB ROOT (outside fhir/) for EVERY IG — upload it
+          [ -f out/milestone/package-registry.json ] && aws s3 cp out/milestone/package-registry.json "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json in output — skipping"
+
+  # Publish the WORKING build to PROD — the common case (preview/ballot/draft). Gated by the same
+  # `production` environment. Dispatch-only (publish_working=true), mutually exclusive with
+  # publish_milestone so a v* tag never publishes a working snapshot as current.
+  publish-working:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_working && !inputs.publish_milestone }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Download reviewed previews
+        uses: actions/download-artifact@v4
+        with: { name: "site-${{ needs.build.outputs.slug }}" }
+      - name: Configure AWS credentials from GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      # New (non-current) version dir + regenerated owned-path root (package-list/history/redirects) +
+      # the shared root files. Does NOT touch old versions or the current landing. Additive — no --delete.
+      - name: Publish WORKING build to prod S3 (owned subtree + shared root files; additive)
+        run: |
+          own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
+          mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
+          test -d "out/working/$own" || { echo "::error::working build missing — not publishing"; exit 1; }
+          aws s3 sync "out/working/$own" "s3://$PROD_BUCKET/$own" --only-show-errors
+          if [ -n "$sub" ]; then
+            aws s3 cp out/working/fhir/package-feed.xml      "s3://$PROD_BUCKET/fhir/package-feed.xml"      --only-show-errors
+            aws s3 cp out/working/fhir/publication-feed.xml  "s3://$PROD_BUCKET/fhir/publication-feed.xml"  --only-show-errors
+          fi
+          [ -f out/working/package-registry.json ] && aws s3 cp out/working/package-registry.json "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json in output — skipping"
