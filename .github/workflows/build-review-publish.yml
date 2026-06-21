@@ -309,6 +309,11 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Deploy previews to S3 (previews bucket)
         run: |
+          # The preview is two full IG sites (working + milestone ≈ 10k+ mostly-small files); the
+          # default aws-cli s3 concurrency of 10 makes this request-rate bound (~12 min). Raise the
+          # transfer concurrency so the many small PUTs parallelise (≈12 min → a few min).
+          aws configure set default.s3.max_concurrent_requests 64
+          aws configure set default.s3.max_queue_size 10000
           # Per-branch preview at s3://<previews-bucket>/<slug>/{working,milestone}/...
           # --delete is scoped to THIS slug's prefix only, so each branch's preview is self-clean and
           # other branches are untouched. Stale branch previews auto-expire via the lifecycle rule.
@@ -357,6 +362,8 @@ jobs:
       # rewritten old-version files. Never --delete.
       - name: Publish MILESTONE build to prod S3 (owned subtree + shared root files; additive)
         run: |
+          aws configure set default.s3.max_concurrent_requests 64   # parallelise the many small PUTs
+          aws configure set default.s3.max_queue_size 10000
           own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
           mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
           test -d "out/milestone/$own" || { echo "::error::milestone build missing (the milestone step failed) — not publishing"; exit 1; }
@@ -391,6 +398,8 @@ jobs:
       # the shared root files. Does NOT touch old versions or the current landing. Additive — no --delete.
       - name: Publish WORKING build to prod S3 (owned subtree + shared root files; additive)
         run: |
+          aws configure set default.s3.max_concurrent_requests 64   # parallelise the many small PUTs
+          aws configure set default.s3.max_queue_size 10000
           own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
           mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
           test -d "out/working/$own" || { echo "::error::working build missing — not publishing"; exit 1; }
