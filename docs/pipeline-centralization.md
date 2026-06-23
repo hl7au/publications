@@ -5,6 +5,9 @@ The build → preview → gated-publish pipeline now lives **once** as a reusabl
 (`au-fhir-base`, `au-fhir-ps`, `au-fhir-core`) keeps only a **thin caller stub** that forwards its
 own push/PR/tag/dispatch events to it. This replaces the per-repo copies that had begun to drift.
 
+> See also: [publication-process.md](./publication-process.md) (end-to-end build→preview→publish flow,
+> environments/domains, the production-gate process) and [decisions.md](./decisions.md) (why each choice).
+
 ## Why centralize
 
 The two per-repo copies (`au-fhir-base`, `au-fhir-ps` on `build-pipeline-redesign`) were ~95%
@@ -64,32 +67,33 @@ jobs:
 
 Identical, except `name:`, the `ref` input description, and **`subtree: "ps"`** (or `"core"`).
 
-## Per-repo setup (one-time, manual — cannot be centralized)
+## Per-repo setup (one-time, manual — cannot be centralized) — ✅ DONE 2026-06-23
 
-GitHub environments are repo-scoped, so the production gate must be configured in **each** IG repo:
+GitHub environments are repo-scoped, so the production gate is configured in **each** IG repo. Now
+created + verified on all three (reviewers `KyleOps` + `brettesler-ext` + `dt-r`; policies
+`branch:master` + `tag:v*`). Full process + the idempotent `gh api` recreate snippet:
+[publication-process.md](./publication-process.md#the-production-environment-gate--setup--process).
 
-1. **Create a `production` environment** in `au-fhir-base`, `au-fhir-ps`, `au-fhir-core`.
-2. **Required reviewers:** Kyle Pettigrew, Brett Esler, dt-r.
-3. **Deployment branches and tags:** restrict to **`master` + tag pattern `v*`** ("only work off
-   main"). ⚠️ Without the `v*` tag rule, a tag-triggered milestone publish is *rejected* by the
-   environment — milestones come in on a `v*` tag.
-4. **OIDC:** already covered — the `ghactions_publications_oidc` role trusts `repo:hl7au/*`, so each
-   IG repo authenticates to AWS through the reusable workflow with no IAM change.
+1. **`production` environment** in `au-fhir-base`, `au-fhir-ps`, `au-fhir-core`. ✅
+2. **Required reviewers:** `KyleOps`, `brettesler-ext` (the admin Brett account), `dt-r`. ✅
+3. **Deployment branches and tags:** `master` + tag pattern `v*`. ⚠️ The `v*` rule is required —
+   a tag-triggered milestone publish is otherwise *rejected*. ✅
+4. **OIDC:** the `ghactions_publications_oidc` role trusts `repo:hl7au/*` — no per-repo IAM change. ✅
 
-## Deploy-target state (current)
+## Deploy-target state (current — updated 2026-06-23)
 
 | target | CI can write? | notes |
 |--------|---------------|-------|
-| previews bucket (`hl7au-fhir-ig-previews`) | ✅ now | per-branch previews; served via the S3 website endpoint |
-| `previews.hl7.org.au` DNS | ❌ pending | URL report prints it labelled "not live yet"; resolves after `enable_cdn=true` |
-| prod (`hl7au-fhir-ig`) | gated | publish jobs built but dormant — blocked by the `production` env until approved |
-| mirror / preprod | ❌ (admin-manual) | not a CI target |
+| previews bucket (`hl7au-fhir-ig-previews`) | ✅ | per-branch previews |
+| **`previews.hl7.org.au`** | ✅ live | CloudFront `E2V1L6CJ5AQEMV`; `enable_cdn=true` applied |
+| **`preprod.hl7.org.au`** | admin-manual | CloudFront `E1U9JOMOLLTC27`; prod mirror + dynamic-publish-box; not a CI target |
+| prod (`hl7au-fhir-ig` / `hl7.org.au`) | ✅ gated | `production` env configured — publish jobs now pause for approval (were dormant) |
 
 ## Rollout order
 
-1. Merge this PR (reusable workflow + this doc) to `publications@master`.
-2. Configure the `production` environment in each IG repo (checklist above).
-3. Add the caller stub to each IG repo's `build-pipeline-redesign` branch (base + ps now, core later),
-   deleting that repo's copied `build-review-publish.yml`.
-4. Open a PR in an IG repo → confirm the preview job posts working S3 URLs; confirm no publish runs.
-5. Once stable, pin the stubs from `@master` to a release tag of this workflow.
+1. ✅ Merge the reusable workflow to `publications@master` (PR #4).
+2. ✅ Configure the `production` environment in each IG repo (done 2026-06-23).
+3. ✅ Caller stub on `build-pipeline-redesign` for au-base + au-ps (au-core: branch pending).
+4. ✅ PR-preview confirmed posting S3 URLs; previews live on `previews.hl7.org.au`; no publish runs ungated.
+5. ⬜ Once stable, pin the stubs from `@master` to a release tag of this workflow.
+6. ⬜ Merge each IG repo's `build-pipeline-redesign` → `master` (au-base PR #1074 pending Brett review).
