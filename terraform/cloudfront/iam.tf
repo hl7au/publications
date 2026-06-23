@@ -73,6 +73,8 @@ resource "aws_iam_role_policy" "publications_s3_scoped" {
         Resource = [
           "arn:aws:s3:::${local.content_bucket}",
           "arn:aws:s3:::${local.content_bucket}/*",
+          "arn:aws:s3:::${local.previews_bucket}",
+          "arn:aws:s3:::${local.previews_bucket}/*",
           "arn:aws:s3:::hl7au-publications-tfstate-ap-southeast-2",
           "arn:aws:s3:::hl7au-publications-tfstate-ap-southeast-2/*",
         ]
@@ -104,6 +106,41 @@ resource "aws_iam_role_policy" "publications_infra_cloudfront" {
           "cloudfront:UpdateFunction",
           "cloudfront:PublishFunction",
           "cloudfront:CreateInvalidation",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Read-only Route 53 + ACM so the CI `terraform plan` can refresh the preprod/previews DNS
+# records and viewer certificate. Deliberately NO write/create actions: standing up new hosts
+# (cert issuance, record creation, distribution creation) is a privileged manual admin apply,
+# same posture as the IAM policy above. CI steady-state plan/apply works with read-only.
+resource "aws_iam_role_policy" "publications_infra_dns_acm_read" {
+  name = "publications-infra-dns-acm-read"
+  role = aws_iam_role.ghactions_publications_oidc.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Route53Read"
+        Effect = "Allow"
+        Action = [
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:GetChange",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AcmRead"
+        Effect = "Allow"
+        Action = [
+          "acm:DescribeCertificate",
+          "acm:ListCertificates",
+          "acm:ListTagsForCertificate",
         ]
         Resource = "*"
       }
