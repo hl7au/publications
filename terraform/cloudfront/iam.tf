@@ -58,7 +58,10 @@ resource "aws_iam_role_policy" "publications_infra_iam" {
   })
 }
 
-# S3 access scoped to the content bucket + the Terraform state bucket only.
+# S3 access scoped to: content (prod), preprod-mirror, previews, and the Terraform-state bucket.
+# The preprod/mirror bucket is CI-writable so the pipeline can auto-deploy to preprod on merge to
+# master (build-review-publish.yml `deploy-preprod`). prod writes still happen only via the gated
+# `production` environment; preprod is ungated staging.
 resource "aws_iam_role_policy" "publications_s3_scoped" {
   name = "publications-s3-scoped"
   role = aws_iam_role.ghactions_publications_oidc.id
@@ -73,6 +76,8 @@ resource "aws_iam_role_policy" "publications_s3_scoped" {
         Resource = [
           "arn:aws:s3:::${local.content_bucket}",
           "arn:aws:s3:::${local.content_bucket}/*",
+          "arn:aws:s3:::${local.preprod_bucket}",
+          "arn:aws:s3:::${local.preprod_bucket}/*",
           "arn:aws:s3:::${local.previews_bucket}",
           "arn:aws:s3:::${local.previews_bucket}/*",
           "arn:aws:s3:::hl7au-publications-tfstate-ap-southeast-2",
