@@ -10,10 +10,15 @@ production. The logic lives once in the reusable workflow `.github/workflows/bui
 
 | event | what runs |
 |-------|-----------|
-| push to `master` | build + previews (no prod publish) |
-| pull request → `master` | build + previews (per-PR) |
-| push of a `v*` tag | build + previews + **publish-milestone** (gated) |
-| `workflow_dispatch` | build + previews; optional **publish-working** or **publish-milestone** (gated) |
+| pull request → `master` | build + reviewable .zip; dev preview = HL7 CI (build.fhir.org) |
+| push to `master` (merge) | build + **auto-deploy to preprod** (ungated; mode auto-detected) |
+| push of a `v*` tag | build + **publish-milestone to PROD** (gated by the `production` env) |
+| `workflow_dispatch` | build; optional **publish-working** / **publish-milestone** to prod (gated) |
+
+Developer previews are HL7 International's CI build at
+`https://build.fhir.org/ig/<org>/<repo>/branches/<branch>/` (rendered by HL7's own auto-builder, not
+this pipeline). Our own S3 preview channel is retained but **off by default** — pass
+`enable_s3_preview: true` only when validating our own pipeline/publisher output specifically.
 
 ## The build (one job, in the `hl7fhir/ig-publisher-base` container)
 
@@ -36,39 +41,59 @@ production. The logic lives once in the reusable workflow `.github/workflows/bui
 
 | host | CloudFront | bucket | purpose | who writes |
 |------|-----------|--------|---------|-----------|
-| **previews.hl7.org.au** | `E2V1L6CJ5AQEMV` | `hl7au-fhir-ig-previews` | per-branch working+milestone previews, path `/<slug>/{working,milestone}/fhir/…`; CachingDisabled; 30-day expiry | **CI** (every push/PR) |
-| **preprod.hl7.org.au** | `E1U9JOMOLLTC27` | `hl7au-fhir-ig-mirror` | prod mirror + dynamic-publish-box; full validation / migration review; reuses the `fhir-canonical` function | admin (S3→S3 sync; not CI) |
-| **hl7.org.au** (prod) | `E2U6NB1JDLY5NT` | `hl7au-fhir-ig` | production | CI, **gated** by the `production` environment |
+| **build.fhir.org** | — (HL7 International) | — | per-branch developer preview, rendered by HL7's auto-builder | HL7 CI (external) |
+| **preprod.hl7.org.au** | `E1U9JOMOLLTC27` | `hl7au-fhir-ig-mirror` | prod mirror + dynamic-publish-box; staging validation before a prod release; reuses the `fhir-canonical` function | **CI on merge to master** |
+| **hl7.org.au** (prod) | `E2U6NB1JDLY5NT` | `hl7au-fhir-ig` | production | CI, **gated** by the `production` environment (v* tag) |
+| previews.hl7.org.au | `E2V1L6CJ5AQEMV` | `hl7au-fhir-ig-previews` | our own per-branch preview, **off by default** (`enable_s3_preview: true`); CachingDisabled; 30-day expiry | CI (opt-in) |
 
 Infra is Terraform in `terraform/cloudfront` (HL7 AWS account `966489602583`, profile `hl7-mgmt`),
 the public-domain layer gated by `-var enable_cdn=true`.
 
-## Preview flow (every push / PR)
+## Developer preview (every push / PR)
 
-The `preview-s3` job downloads the artifact, seeds the history-template assets + preview-only redirects,
-assumes the OIDC role, and `aws s3 sync`s to `s3://hl7au-fhir-ig-previews/<slug>/`
-(`max_concurrent_requests=64` → ~2.5 min; decisions D8). Reviewers open:
+No deploy from us — the build job posts a link to HL7 International's CI build
+(`https://build.fhir.org/ig/<org>/<repo>/branches/<branch>/`) plus the downloadable `site-<slug>`
+artifact (the working + milestone renders as one tar.gz). To validate our **own** pipeline/publisher
+output (dynamic publish-box, combined jar, canonical behaviour), re-enable the S3 preview with
+`enable_s3_preview: true` — it deploys to `https://previews.hl7.org.au/<slug>/{working,milestone}/…`.
 
-```
-https://previews.hl7.org.au/<slug>/working/fhir/<version>/index.html
-https://previews.hl7.org.au/<slug>/milestone/fhir/<version>/index.html
-```
+## Preprod (auto, on merge to master)
 
-The dynamic publish-box resolves against the preview's own `package-list.json` (same-origin); baked
-absolute `hl7.org.au` canonicals resolve to prod. Cross-version comparison is present in both previews.
+The `deploy-preprod` job runs on every push to `master` (ungated) and syncs the detected build to the
+mirror bucket additively, then invalidates the preprod CloudFront. **Milestone vs working is
+auto-detected from `status` in `publication-request.json`** (the FHIR-standard signal, see
+decisions D13): `release`/`trial-use`/`normative`/`normative+trial-use` → **milestone** (preprod shows
+the candidate "current"); `draft`/`ballot`/`preview`/`update`/`ci-build` → **working** (a non-current
+versioned snapshot). preprod mirrors prod, so seeding the lean `-web` from live prod is correct here.
+Validate at `https://preprod.hl7.org.au/<owned>/<version>/index.html`, then cut the prod release.
 
-## Publishing to prod (gated)
+## Publishing to prod (gated — the rock-solid path)
 
-Both prod jobs declare `environment: production`, so they **pause for a required-reviewer approval**
-before any S3 write.
+`publish-milestone` declares `environment: production`, so it **pauses for a required-reviewer
+approval** before any S3 write. Triggered by a **`v*` tag** push (e.g. `git tag v6.1.0 && git push
+--tags`). Steps, in order:
 
-- **Milestone (becomes current):** push a `v*` tag (or dispatch with `publish_milestone=true`).
-  `publish-milestone` syncs `out/milestone/<owned>` to prod (additive) + the shared root files.
-- **Working (versioned snapshot, NOT current):** dispatch with `publish_working=true`.
-  `publish-working` syncs `out/working/<owned>` (does not touch the current landing or old versions).
+1. **Release guard** — fail unless the version is a clean SemVer release (`X.Y.Z`, no `-prerelease`
+   suffix) **and** the status is a milestone status (`release`/`trial-use`/`normative`). This blocks
+   publishing a `-ci-build`/draft/ballot/preview to prod as "current". Set `version` + `status` in
+   `publication-request.json` first, then tag `v<version>`.
+2. **Approval** — a `production` reviewer approves the waiting job.
+3. **Publish** — `aws s3 sync out/milestone/<owned>` to prod (additive) + the shared root files +
+   `package-registry.json`. With the dynamic publish-box there are **no rewritten old-version files**.
+4. **CloudFront invalidation** (`/*` on the prod distribution).
+5. **Post-publish verify** — fail the run if the new version page and the canonical "current" page
+   aren't returning 200 on `hl7.org.au` (retried).
 
-With the dynamic publish-box there are **no rewritten old-version files** — a publish only adds the new
-version dir + regenerates the owned-path root (history, package-list, redirects).
+`publish-working` (dispatch with `publish_working=true`, gated) publishes a non-current versioned
+snapshot the same way (sync + invalidate + verify), without touching the current landing or old versions.
+
+### Cut a production release (checklist)
+1. In the IG repo, set `publication-request.json` `version` = `X.Y.Z` (clean) and `status` =
+   `trial-use` (or `release`/`normative`); update `desc`/`sequence`. Open a PR, merge to `master`.
+2. The merge auto-deploys to **preprod** as a milestone — validate `https://preprod.hl7.org.au/<owned>/`.
+3. Tag the release: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. Approve the **production** environment prompt on the Actions run.
+5. The run publishes, invalidates, and verifies prod automatically.
 
 ## The `production` environment gate — setup & process
 

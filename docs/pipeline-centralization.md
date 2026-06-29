@@ -80,14 +80,17 @@ created + verified on all three (reviewers `KyleOps` + `brettesler-ext` + `dt-r`
    a tag-triggered milestone publish is otherwise *rejected*. ✅
 4. **OIDC:** the `ghactions_publications_oidc` role trusts `repo:hl7au/*` — no per-repo IAM change. ✅
 
-## Deploy-target state (current — updated 2026-06-23)
+## Deploy-target state (current — updated 2026-06-30)
 
 | target | CI can write? | notes |
 |--------|---------------|-------|
-| previews bucket (`hl7au-fhir-ig-previews`) | ✅ | per-branch previews |
-| **`previews.hl7.org.au`** | ✅ live | CloudFront `E2V1L6CJ5AQEMV`; `enable_cdn=true` applied |
-| **`preprod.hl7.org.au`** | admin-manual | CloudFront `E1U9JOMOLLTC27`; prod mirror + dynamic-publish-box; not a CI target |
-| prod (`hl7au-fhir-ig` / `hl7.org.au`) | ✅ gated | `production` env configured — publish jobs now pause for approval (were dormant) |
+| **build.fhir.org** (dev preview) | — (external) | HL7 International's auto-builder; the build job links it. Our default dev preview. |
+| **`preprod.hl7.org.au`** | ✅ on merge to master | CloudFront `E1U9JOMOLLTC27`; mirror bucket now CI-writable (`deploy-preprod`, ungated); mode auto-detected from `status` |
+| **`hl7.org.au`** (prod) | ✅ gated (v* tag) | CloudFront `E2U6NB1JDLY5NT`; `production` env approval + release guard + invalidation + verify |
+| `previews.hl7.org.au` | ✅ opt-in | CloudFront `E2V1L6CJ5AQEMV`; our own preview, **off by default** (`enable_s3_preview: true`) |
+
+See [publication-process.md](./publication-process.md) and [decisions.md](./decisions.md) (D12–D14)
+for the build.fhir.org preview, preprod-on-merge, status-driven milestone detection, and prod hardening.
 
 ## Rollout order
 

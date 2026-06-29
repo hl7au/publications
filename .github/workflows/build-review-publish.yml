@@ -1,15 +1,23 @@
-name: IG build → working+milestone previews → gated publish (reusable)
+name: IG build → preprod (on merge) → gated prod publish (reusable)
 
 # CENTRALIZED, reusable (workflow_call) pipeline for the AU FHIR IGs. ONE source of truth lives here
 # in hl7au/publications; each IG repo (au-fhir-base, au-fhir-ps, au-fhir-core) carries only a thin
-# caller stub that forwards its push/PR/tag/dispatch events to this workflow. This replaces the
-# per-repo copies of build-review-publish.yml that had begun to drift (S3 vs GitHub Pages previews;
-# the history-asset seeding fix present in only one; inconsistent package-registry.json handling).
+# caller stub that forwards its push/PR/tag/dispatch events to this workflow.
 #
 # WHAT IT DOES: renders the IG ONCE (publication mode), then runs go-publish TWICE off that single
 # render (-reuse-build → the 2nd is ~100s, not another render) to produce BOTH a WORKING and a
-# MILESTONE build; deploys both side-by-side as a per-branch S3 preview; and (gated) publishes to
-# prod S3. github.* context inside this workflow reflects the CALLER's triggering event.
+# MILESTONE build, packaged as one reviewable .zip artifact. Then:
+#   - DEVELOPER PREVIEW is HL7 International's CI build (build.fhir.org/ig/<org>/<repo>/branches/<branch>),
+#     driven by HL7's own auto-builder — NOT this pipeline. We just link to it + attach the .zip.
+#     (Our own S3 preview is retained but OFF by default — set enable_s3_preview=true to re-enable it
+#      when we specifically need to validate our own pipeline/publisher output.)
+#   - On MERGE TO master → auto-deploy to PREPROD (preprod.hl7.org.au) for staging validation. Mode
+#     (milestone vs working) is AUTO-DETECTED from publication-request.json `status` (the FHIR-standard
+#     signal): release/trial-use/normative/normative+trial-use → milestone (becomes 'current');
+#     draft/ballot/preview/update/ci-build → working (versioned snapshot, not current).
+#   - On a v* TAG push → GATED publish to PROD (hl7.org.au), milestone, behind the caller repo's
+#     `production` environment, with a release guard + CloudFront invalidation + post-publish verify.
+# github.* context inside this workflow reflects the CALLER's triggering event.
 #
 # PER-IG PARAMETER — `subtree`:
 #   - ""          → this IG owns the /fhir ROOT (au-base). Syncs out/<mode>/fhir → s3://<bucket>/fhir.
@@ -20,12 +28,13 @@ name: IG build → working+milestone previews → gated publish (reusable)
 #   Shared root files are seeded from the LIVE prod copies, so go-publish inserts this IG's entry and
 #   the sibling IGs' entries survive. All uploads are additive — never --delete.
 #
-# DEPLOY TARGETS (current approval state — see publications/terraform/cloudfront + docs):
-#   - previews S3 bucket (hl7au-fhir-ig-previews): CI-writable NOW. Per-branch previews land here.
-#   - prod (hl7au-fhir-ig): the publish jobs are GATED on the caller repo's `production` environment
-#     (required reviewers; deployment-branch rule = master + v* tags). Built but dormant until approved.
-#   - previews.hl7.org.au DNS: not live yet — the URL report leads with the working S3 website
-#     endpoint and prints the (pending) previews.hl7.org.au URL labelled "not live yet".
+# DEPLOY TARGETS:
+#   - build.fhir.org (HL7 CI): developer previews — external, not written by us.
+#   - preprod (hl7au-fhir-ig-mirror / preprod.hl7.org.au): auto-deploy on merge to master. Ungated.
+#   - prod (hl7au-fhir-ig / hl7.org.au): GATED on the caller repo's `production` environment
+#     (required reviewers; deployment-branch rule = master + v* tags). v* tag only.
+#   - previews S3 (hl7au-fhir-ig-previews / previews.hl7.org.au): retained but OFF by default
+#     (enable_s3_preview=true to re-enable our own preview channel).
 #
 # TEMP: fetches the combined custom publisher.jar (KyleOps/fhir-ig-publisher release au-pipeline-combined:
 # #1327 cloud redirects + A2 dynamic publish-box/page-versions + skip-version-tree + A3 source viewers +
@@ -52,9 +61,13 @@ on:
         description: "Publish the WORKING build to prod S3 (versioned snapshot, NOT current; gated)."
         type: boolean
         default: false
+      enable_s3_preview:
+        description: "Also deploy our own S3 preview channel (previews.hl7.org.au). Off by default — build.fhir.org is the dev preview."
+        type: boolean
+        default: false
 
 permissions:
-  id-token: write   # OIDC → AWS (previews sync + gated prod publish)
+  id-token: write   # OIDC → AWS (preprod deploy + gated prod publish + optional S3 preview)
   contents: read
 
 concurrency:
@@ -67,7 +80,10 @@ env:
   PUBLICATIONS_REF: master
   TX_SERVER: https://tx.fhir.org
   PROD_BUCKET: hl7au-fhir-ig
+  PREPROD_BUCKET: hl7au-fhir-ig-mirror
   PREVIEWS_BUCKET: hl7au-fhir-ig-previews
+  PROD_DIST: E2U6NB1JDLY5NT
+  PREPROD_DIST: E1U9JOMOLLTC27
   AWS_ROLE: arn:aws:iam::966489602583:role/ghactions_publications_oidc
   AWS_REGION: ap-southeast-2
 
@@ -79,6 +95,10 @@ jobs:
       slug: ${{ steps.meta.outputs.slug }}
       ver: ${{ steps.render.outputs.ver }}
       own: ${{ steps.meta.outputs.own }}
+      status: ${{ steps.detect.outputs.status }}
+      version: ${{ steps.detect.outputs.version }}
+      pubmode: ${{ steps.detect.outputs.pubmode }}
+      release_ok: ${{ steps.detect.outputs.release_ok }}
     steps:
       - name: Compute build label (branch / pr-N / tag / dispatch ref) + owned path
         id: meta
@@ -101,6 +121,33 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           path: ig-src
+
+      # Auto-detect milestone vs working from the FHIR-standard `status` in publication-request.json
+      # (NOT the version number — AU history shows clean versions like 2.0.0 shipped as `preview` and
+      # 1.0.0 as `ballot`; the versions that became 'current' were all `trial-use`). The publisher's
+      # `mode` (working/milestone) and `status` are independent; here `status` drives the choice:
+      #   release | trial-use | normative | normative+trial-use → MILESTONE (becomes 'current')
+      #   draft | ballot | preview | update | ci-build | (other) → WORKING (versioned, not current)
+      # release_ok additionally requires a clean SemVer release version (no -prerelease suffix), used
+      # as the prod-publish guard so a -ci-build/preview can never be published to prod as 'current'.
+      - name: Detect publication mode (status-driven)
+        id: detect
+        working-directory: ig-src
+        run: |
+          status=$(node -e 'const fs=require("fs");try{process.stdout.write((JSON.parse(fs.readFileSync("publication-request.json","utf8")).status||"").toLowerCase())}catch(e){}')
+          version=$(node -e 'const fs=require("fs");try{process.stdout.write(JSON.parse(fs.readFileSync("publication-request.json","utf8")).version||"")}catch(e){}')
+          case "$status" in
+            release|trial-use|normative|normative+trial-use) pubmode=milestone ;;
+            *) pubmode=working ;;
+          esac
+          # clean release version = X.Y.Z with no -prerelease suffix
+          relok=false
+          if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && [ "$pubmode" = "milestone" ]; then relok=true; fi
+          echo "status=$status"   >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pubmode=$pubmode" >> "$GITHUB_OUTPUT"
+          echo "release_ok=$relok" >> "$GITHUB_OUTPUT"
+          echo "status='$status' version='$version' → pubmode=$pubmode (clean-release=$relok)"
 
       - name: Checkout publish-setup.json + templates (sparse, from publications)
         uses: actions/checkout@v4
@@ -256,14 +303,39 @@ jobs:
           path: preview-${{ steps.meta.outputs.slug }}.tar.gz
           retention-days: 14
 
-  # Per-branch / per-PR live PREVIEWS on the previews S3 bucket — BOTH the working and milestone
-  # renders. Synced to s3://hl7au-fhir-ig-previews/<slug>/{working,milestone}/ so branches coexist;
-  # stale previews auto-expire via the bucket's 30-day lifecycle rule. No canonical CloudFront
-  # function here: baked absolute hl7.org.au canonicals resolve to PROD, so this is good for "does it
-  # render / how does the milestone look", not for canonical/version redirects. The dynamic publish-box
-  # DOES resolve (its JS reads the preview's own package-list.json same-origin).
+      # Developer preview = HL7 International's CI build (build.fhir.org), driven by HL7's own
+      # auto-builder. We don't deploy it — just surface the link + the downloadable .zip. The HL7 CI
+      # build URL is /ig/<org>/<repo> for the default branch and /ig/<org>/<repo>/branches/<branch>
+      # otherwise. (Tag/dispatch runs aren't branch builds, so we point at the default-branch build.)
+      - name: Report build outputs (build.fhir.org preview + downloadable zip)
+        run: |
+          repo="${{ github.repository }}"            # e.g. hl7au/au-fhir-base
+          default="${{ github.event.repository.default_branch }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then branch="${{ github.head_ref }}"; else branch="${{ github.ref_name }}"; fi
+          base="https://build.fhir.org/ig/$repo"
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            url="$base"                              # tag build → default-branch CI build
+          elif [ -n "$branch" ] && [ "$branch" != "$default" ]; then
+            url="$base/branches/$branch"
+          else
+            url="$base"
+          fi
+          {
+            echo "### Developer preview & build output";
+            echo "";
+            echo "- **HL7 CI preview (build.fhir.org):** $url/  _(rendered by HL7 International's auto-builder; allow a few minutes after push)_";
+            echo "- **Reviewable build (this run):** the \`site-${{ steps.meta.outputs.slug }}\` artifact below — a tar.gz of the working + milestone renders.";
+            echo "- detected publication mode: **${{ steps.detect.outputs.pubmode }}** (status \`${{ steps.detect.outputs.status }}\`, version \`${{ steps.detect.outputs.version }}\`)";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # OUR OWN per-branch S3 previews (previews.hl7.org.au) — RETAINED but OFF by default. The developer
+  # preview channel is HL7 International's build.fhir.org (see the build job's report). Re-enable this
+  # (enable_s3_preview=true) only when we need to validate our OWN pipeline/publisher output (e.g.
+  # testing the dynamic publish-box, the combined jar, or canonical behaviour) rather than the content.
+  # Deploys BOTH the working and milestone renders to s3://hl7au-fhir-ig-previews/<slug>/{working,milestone}/.
   preview-s3:
     needs: build
+    if: ${{ inputs.enable_s3_preview }}
     runs-on: ubuntu-latest
     steps:
       - name: Download built previews
@@ -335,8 +407,56 @@ jobs:
             echo "";
             echo "_Working = the new version as a non-current preview. Milestone = the same version promoted to";
             echo "current (publish box reads 'this is the current version'; old versions untouched via dynamic-publish-box)._";
-            echo "_Primary links use the S3 website endpoint (live now). Once the previews.hl7.org.au DNS is approved,";
-            echo "the same paths resolve under \`$dnsbase/working/$own/$ver/index.html\` (not live yet)._";
+            echo "_Primary links use the S3 website endpoint. Once the previews.hl7.org.au DNS is in use,";
+            echo "the same paths resolve under \`$dnsbase/working/$own/$ver/index.html\`._";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # AUTO-DEPLOY TO PREPROD on a merge to master — the staging/validation environment before a prod
+  # release. UNGATED (preprod is not prod). Deploys the AUTO-DETECTED mode (milestone vs working, from
+  # publication-request.json `status`): a release/trial-use status lands as the candidate 'current' so
+  # preprod shows exactly what prod will look like; a draft/ballot/preview/ci-build status lands as a
+  # non-current versioned snapshot. Same additive owned-subtree + shared-root-files model as prod, but
+  # to the mirror bucket. preprod mirrors prod, so seeding the lean -web from live prod (in the build
+  # job) is correct here too. CloudFront (CachingOptimized) is invalidated so the change shows promptly.
+  deploy-preprod:
+    needs: build
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built site
+        uses: actions/download-artifact@v4
+        with: { name: "site-${{ needs.build.outputs.slug }}" }
+      - name: Configure AWS credentials from GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy detected mode to preprod S3 (mirror bucket; additive)
+        run: |
+          aws configure set default.s3.max_concurrent_requests 64
+          aws configure set default.s3.max_queue_size 10000
+          own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
+          m="${{ needs.build.outputs.pubmode }}"   # milestone | working (auto-detected from status)
+          echo "Deploying '$m' build to preprod (status=${{ needs.build.outputs.status }}, version=${{ needs.build.outputs.version }})"
+          mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
+          test -d "out/$m/$own" || { echo "::error::'$m' build missing in artifact — not deploying to preprod"; exit 1; }
+          aws s3 sync "out/$m/$own" "s3://$PREPROD_BUCKET/$own" --only-show-errors
+          if [ -n "$sub" ]; then
+            aws s3 cp out/$m/fhir/package-feed.xml      "s3://$PREPROD_BUCKET/fhir/package-feed.xml"      --only-show-errors
+            aws s3 cp out/$m/fhir/publication-feed.xml  "s3://$PREPROD_BUCKET/fhir/publication-feed.xml"  --only-show-errors
+          fi
+          [ -f out/$m/package-registry.json ] && aws s3 cp out/$m/package-registry.json "s3://$PREPROD_BUCKET/package-registry.json" --only-show-errors || true
+      - name: Invalidate preprod CloudFront
+        run: aws cloudfront create-invalidation --distribution-id "$PREPROD_DIST" --paths "/*" >/dev/null
+      - name: Report preprod URL
+        run: |
+          own="${{ needs.build.outputs.own }}"; ver="${{ needs.build.outputs.ver }}"
+          {
+            echo "### Deployed to preprod (staging)";
+            echo "- mode: **${{ needs.build.outputs.pubmode }}** (status \`${{ needs.build.outputs.status }}\`, version \`${{ needs.build.outputs.version }}\`)";
+            echo "- https://preprod.hl7.org.au/$own/$ver/index.html";
+            echo "- directory of versions: https://preprod.hl7.org.au/$own/history.html";
+            echo "_Validate here, then cut a prod release by pushing a \`v*\` tag (gated by the production environment)._";
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Promote the MILESTONE build to PROD — gated by the caller repo's `production` environment (required
@@ -348,6 +468,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      # Release guard: a prod milestone must be a clean SemVer release (X.Y.Z, no -prerelease suffix)
+      # with a milestone status (release/trial-use/normative). Blocks accidentally publishing a
+      # -ci-build/draft/ballot/preview as prod 'current'. (release_ok is computed in the build job.)
+      - name: Guard — require a clean release version + milestone status
+        run: |
+          if [ "${{ needs.build.outputs.release_ok }}" != "true" ]; then
+            echo "::error::Refusing to publish to PROD: version='${{ needs.build.outputs.version }}' status='${{ needs.build.outputs.status }}'. A prod milestone needs a clean release version (X.Y.Z) and a release/trial-use/normative status. Set version + status in publication-request.json, then tag v<version>."
+            exit 1
+          fi
+          echo "Release guard OK: version=${{ needs.build.outputs.version }} status=${{ needs.build.outputs.status }}"
       - name: Download reviewed previews
         uses: actions/download-artifact@v4
         with: { name: "site-${{ needs.build.outputs.slug }}" }
@@ -376,6 +506,30 @@ jobs:
           fi
           # (c) package-registry.json is at the WEB ROOT (outside fhir/) for EVERY IG — upload it
           [ -f out/milestone/package-registry.json ] && aws s3 cp out/milestone/package-registry.json "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json in output — skipping"
+      - name: Invalidate prod CloudFront
+        run: aws cloudfront create-invalidation --distribution-id "$PROD_DIST" --paths "/*" >/dev/null
+      # Post-publish verification: the new version's landing page must be live (200) on prod, and the
+      # canonical 'current' page must resolve. A non-200 fails the run so a broken publish is loud.
+      - name: Verify prod publish
+        run: |
+          own="${{ needs.build.outputs.own }}"; ver="${{ needs.build.outputs.ver }}"
+          base="https://hl7.org.au/$own"
+          fail=0
+          for u in "$base/$ver/index.html" "$base/index.html"; do
+            for attempt in 1 2 3 4 5; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$u" || echo 000)
+              [ "$code" = "200" ] && break
+              sleep 15
+            done
+            if [ "$code" = "200" ]; then echo "OK   $u"; else echo "::error::FAIL ($code) $u"; fail=1; fi
+          done
+          {
+            echo "### Published to prod";
+            echo "- version: **${{ needs.build.outputs.version }}** (status \`${{ needs.build.outputs.status }}\`)";
+            echo "- $base/$ver/index.html";
+            echo "- current: $base/index.html";
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
 
   # Publish the WORKING build to PROD — the common case (preview/ballot/draft). Gated by the same
   # `production` environment. Dispatch-only (publish_working=true), mutually exclusive with
@@ -409,3 +563,17 @@ jobs:
             aws s3 cp out/working/fhir/publication-feed.xml  "s3://$PROD_BUCKET/fhir/publication-feed.xml"  --only-show-errors
           fi
           [ -f out/working/package-registry.json ] && aws s3 cp out/working/package-registry.json "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json in output — skipping"
+      - name: Invalidate prod CloudFront
+        run: aws cloudfront create-invalidation --distribution-id "$PROD_DIST" --paths "/*" >/dev/null
+      - name: Verify prod publish (new version dir is live)
+        run: |
+          own="${{ needs.build.outputs.own }}"; ver="${{ needs.build.outputs.ver }}"
+          u="https://hl7.org.au/$own/$ver/index.html"
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$u" || echo 000)
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+          if [ "$code" = "200" ]; then echo "OK $u"; else echo "::error::FAIL ($code) $u"; exit 1; fi
+          echo "### Published WORKING build to prod" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $u (versioned snapshot; 'current' unchanged)" >> "$GITHUB_STEP_SUMMARY"
