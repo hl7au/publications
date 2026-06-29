@@ -88,3 +88,33 @@ ungated; only prod publish pauses for a human approval. Set up idempotently via 
 The full 27-version prod migration (apply dynamic-publish-box to all historical versions, fixing live
 page-version errors) is **deferred** — the corrected content already lives on the preprod mirror, so it's
 a flip when ready. Optional backfill flagged to Brett.
+
+## D12 — Developer previews = HL7 build.fhir.org; our S3 preview retained but off
+Discussed with Brett: HL7 International already builds per-branch developer previews at
+`build.fhir.org/ig/<org>/<repo>/branches/<branch>/` (via HL7's own Azure auto-builder). So the pipeline
+**no longer deploys our own S3 preview by default** — the build job just links the build.fhir.org URL +
+attaches the reviewable working+milestone `.zip`. Our `preview-s3` job is **retained but gated off**
+behind a new `enable_s3_preview` input (default false); re-enable only to validate our *own*
+pipeline/publisher output (dynamic publish-box, combined jar, canonical behaviour). Supersedes the
+"previews on every push" part of D9 (the previews bucket/host stay provisioned).
+
+## D13 — Milestone vs working is detected from `status`, NOT the version number
+Researched the FHIR/SemVer standard + AU's own published history. **Whole-number ≠ milestone:** in
+`package-list.json`, `2.0.0` shipped as `preview` and `1.0.0` as `ballot`, while every version that
+became **current** (5.0.0, 4.1.0, 4.0.0, 1.0.2) was `trial-use`. Per SemVer the `-suffix` only marks a
+pre-release; the IG-publication milestone signal is the **`status`** field (publisher treats `mode` and
+`status` as independent). So the pipeline auto-detects from `publication-request.json` `status`:
+`release`/`trial-use`/`normative`/`normative+trial-use` → **milestone** (becomes "current"); everything
+else (`draft`/`ballot`/`preview`/`update`/`ci-build`) → **working**. The team controls it the standard
+FHIR way — by editing `version` + `status` — instead of the pipeline hardcoding a mode.
+
+## D14 — Preprod on merge to master; prod hardened (guard + invalidate + verify)
+- **Merge to master → auto-deploy to preprod** (`preprod.hl7.org.au`, ungated), deploying the
+  D13-detected mode additively to the mirror bucket + CloudFront invalidation. preprod is the staging
+  validation step before a release. Required granting the OIDC role write to the mirror bucket
+  (terraform `publications_s3_scoped`, applied 2026-06-30; prod still gated by the `production` env).
+- **Prod release trigger = `v*` tag** (chosen over dispatch-only). The `publish-milestone` job is
+  hardened with: (1) a **release guard** — clean `X.Y.Z` version + milestone status, else fail (blocks
+  publishing a `-ci-build`/preview as prod "current"); (2) a **CloudFront invalidation**; (3) a
+  **post-publish verification** that fails the run if the new version + "current" pages aren't 200 on
+  `hl7.org.au`. `publish-working` gets the same invalidate + verify.
