@@ -67,6 +67,10 @@ on:
         description: "Publish the WORKING build to prod S3 (versioned snapshot, NOT current; ungated — additive only)."
         type: boolean
         default: false
+      deploy_preprod:
+        description: "Deploy this build to PREPROD (preprod.hl7.org.au) — on-demand branch staging with the real CloudFront setup. Master merges deploy automatically regardless."
+        type: boolean
+        default: false
       enable_s3_preview:
         description: "Also deploy our own S3 preview channel (previews.hl7.org.au). Off by default — build.fhir.org is the dev preview."
         type: boolean
@@ -444,7 +448,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # AUTO-DEPLOY TO PREPROD on a merge to master — the staging/validation environment before a prod
-  # release. UNGATED (preprod is not prod). Deploys the AUTO-DETECTED mode (milestone vs working, from
+  # release. Also runs on an explicit dispatch with deploy_preprod=true (+ ref=<branch>) so a BRANCH
+  # build can be staged on preprod BEFORE merging — unlike the previews channel, preprod sits behind
+  # the real CloudFront distribution (canonical/redirect functions), so pages like qa.html and the
+  # publish box behave exactly as they will on prod. UNGATED (preprod is not prod). Deploys the
+  # AUTO-DETECTED mode (milestone vs working, from
   # publication-request.json `status`): a release/trial-use status lands as the candidate 'current' so
   # preprod shows exactly what prod will look like; a draft/ballot/preview/ci-build status lands as a
   # non-current versioned snapshot. Same additive owned-subtree + shared-root-files model as prod, but
@@ -452,7 +460,7 @@ jobs:
   # job) is correct here too. CloudFront (CachingOptimized) is invalidated so the change shows promptly.
   deploy-preprod:
     needs: build
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.deploy_preprod) }}
     runs-on: ubuntu-latest
     steps:
       - name: Download built site
