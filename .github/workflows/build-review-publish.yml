@@ -278,7 +278,13 @@ jobs:
       # web-root prefix off the version dest folder; a relative path throws StringIndexOutOfBounds).
       - name: Build WORKING preview (go-publish, mode=working, -reuse-build)
         run: |
-          node -e 'const fs=require("fs");const p="ig-src/publication-request.json";const d=JSON.parse(fs.readFileSync(p,"utf8"));d.mode="working";fs.writeFileSync(p,JSON.stringify(d,null,2));'
+          # Preview leniency: PR / branch-push builds may depend on #current (normal for CI content,
+          # e.g. au-core master depends on hl7.fhir.au.base#current) — allow it so previews still
+          # build. Tag and dispatch runs stay STRICT: their artifacts are exactly what a prod publish
+          # uploads, so a release with an unpinned dependency must fail loudly here (go-publish's
+          # "current version check"), forcing the release commit to pin its dependencies.
+          if [ "${{ github.ref_type }}" != "tag" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then export ALLOW_CURRENT_DEPS=true; fi
+          node -e 'const fs=require("fs");const p="ig-src/publication-request.json";const d=JSON.parse(fs.readFileSync(p,"utf8"));d.mode="working";if(process.env.ALLOW_CURRENT_DEPS==="true"){d["allow-current-dependencies"]=true;}fs.writeFileSync(p,JSON.stringify(d,null,2));'
           cp -a web-seed webroot-working
           java -jar "$GITHUB_WORKSPACE/ig-src/input-cache/publisher.jar" -go-publish -reuse-build \
             -source "$GITHUB_WORKSPACE/ig-src" -web "$GITHUB_WORKSPACE/webroot-working" \
@@ -295,7 +301,8 @@ jobs:
         run: |
           # Force milestone + trial-use (AU milestones are the R-numbered trial-use "current"). Same
           # publish path → -reuse-build still adopts the one render. Throwaway -web; affects nothing.
-          node -e 'const fs=require("fs");const p="ig-src/publication-request.json";const d=JSON.parse(fs.readFileSync(p,"utf8"));d.mode="milestone";d.status="trial-use";fs.writeFileSync(p,JSON.stringify(d,null,2));'
+          if [ "${{ github.ref_type }}" != "tag" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then export ALLOW_CURRENT_DEPS=true; fi
+          node -e 'const fs=require("fs");const p="ig-src/publication-request.json";const d=JSON.parse(fs.readFileSync(p,"utf8"));d.mode="milestone";d.status="trial-use";if(process.env.ALLOW_CURRENT_DEPS==="true"){d["allow-current-dependencies"]=true;}fs.writeFileSync(p,JSON.stringify(d,null,2));'
           cp -a web-seed webroot-milestone
           java -jar "$GITHUB_WORKSPACE/ig-src/input-cache/publisher.jar" -go-publish -reuse-build \
             -source "$GITHUB_WORKSPACE/ig-src" -web "$GITHUB_WORKSPACE/webroot-milestone" \
