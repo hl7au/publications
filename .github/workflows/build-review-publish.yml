@@ -216,6 +216,12 @@ jobs:
       # Keyed on the IG's dependency declarations (ig.xml dependsOn + ig.ini); restore-keys falls back
       # to the latest cache and the render just adds anything new. NOTE: only the -ig render honors
       # -package-cache-folder; go-publish ignores it, but -reuse-build makes go-publish skip the render.
+      # The render step also symlinks ~/.fhir/packages to this folder: several code paths hardwire the
+      # DEFAULT cache location — go-publish, and the validator's ImplementationGuide.dependsOn check,
+      # which builds its own FilesystemPackageCacheManager. With a cold default cache that check falls
+      # through to a fuzzy npm catalog search and reports bogus canonical clashes (e.g. packageId
+      # hl7.terminology.r4 "pointing to" packages2's hl7.terminology.r4b web tgz) — 5 spurious QA
+      # errors on the au-core 2.1.0-draft release that build.fhir.org (warm default cache) never shows.
       - name: Cache FHIR packages (speeds up the render)
         uses: actions/cache@v4
         with:
@@ -245,6 +251,9 @@ jobs:
           # runs below can adopt it (no re-render). Path (not mode) drives the reuse match, so flipping
           # mode for each preview below still reuses this one render.
           mkdir -p "$GITHUB_WORKSPACE/.fhir-cache"
+          # Unify the DEFAULT package-cache location with the cached folder (see the cache step note):
+          # kills the spurious dependsOn canonical-clash QA errors and lets go-publish reuse the cache.
+          mkdir -p "$HOME/.fhir" && rm -rf "$HOME/.fhir/packages" && ln -sfn "$GITHUB_WORKSPACE/.fhir-cache" "$HOME/.fhir/packages"
           PUBPATH=$(grep -o '"path"[^,}]*' publication-request.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
           echo "Publication path: $PUBPATH"
           echo "ver=${PUBPATH##*/}" >> "$GITHUB_OUTPUT"   # version folder name, for preview deep-links
