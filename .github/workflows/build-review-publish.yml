@@ -23,6 +23,11 @@ name: IG build → preprod (on GitHub release) — reusable
 #     released IG, gated by a per-IG publications `production-<ig>` env). See docs/publication-process.md.
 # github.* context inside this workflow reflects the CALLER's triggering event.
 #
+# QUALITY GATE: every build reads the publisher's QA summary (output/qa.json) and reports the error /
+# warning / hint counts. When the caller stub sets qa_max_errors (or qa_max_warnings), the build FAILS
+# if the count exceeds it — so a PR or release that introduces NEW validation errors is caught without a
+# manual qa.html read, and a regressed release never reaches preprod (deploy-preprod needs the build).
+#
 # PER-IG PARAMETER — `subtree`:
 #   - ""          → this IG owns the /fhir ROOT (au-base). Syncs out/<mode>/fhir → s3://<bucket>/fhir.
 #   - "ps"/"core" → this IG owns only /fhir/<subtree>. Syncs that subtree, PLUS the SHARED root files
@@ -66,6 +71,14 @@ on:
         description: "Also deploy our own S3 preview channel (previews.hl7.org.au). Off by default — build.fhir.org is the dev preview."
         type: boolean
         default: false
+      qa_max_errors:
+        description: "QA gate: fail the build if publisher validation ERRORS exceed this. -1 (default) = advisory (report only). Set to the IG's current error count in the caller stub and ratchet down."
+        type: number
+        default: -1
+      qa_max_warnings:
+        description: "QA gate: fail the build if publisher validation WARNINGS exceed this. -1 (default) = advisory (report only)."
+        type: number
+        default: -1
 
 permissions:
   id-token: write   # OIDC → AWS (preprod deploy + optional S3 preview)
@@ -348,6 +361,48 @@ jobs:
             echo "- **Reviewable build (this run):** the \`site-${{ steps.meta.outputs.slug }}\` artifact below — a tar.gz of the working + milestone renders.";
             echo "- detected publication mode: **${{ steps.detect.outputs.pubmode }}** (status \`${{ steps.detect.outputs.status }}\`, version \`${{ steps.detect.outputs.version }}\`)";
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # QUALITY GATE — the publisher writes a structured QA summary (output/qa.json) with error / warning
+      # / hint counts. Surface them on EVERY run and, when a threshold is set, FAIL the build so a PR (or
+      # a release) that introduces NEW validation errors is caught automatically — no manual qa.html read
+      # required. Thresholds come from the caller stub (qa_max_errors / qa_max_warnings): -1 = advisory
+      # (report only); otherwise the build fails when the count exceeds the value. Set each IG's threshold
+      # to its current count and ratchet down as errors are fixed. This runs LAST so the reviewable
+      # artifact (which contains qa.html) still uploads even when the gate fails — and because the gate
+      # fails the build job, the downstream deploy-preprod job (needs: build) will not run on a regression.
+      - name: QA gate (publisher validation errors / warnings)
+        if: ${{ !cancelled() && steps.render.outcome == 'success' }}
+        working-directory: ig-src
+        shell: bash
+        run: |
+          if [ ! -f output/qa.json ]; then
+            echo "::warning::output/qa.json not found — skipping QA gate (the render did not produce it)"; exit 0
+          fi
+          read -r errs warns hints swarns <<< "$(node -e 'const fs=require("fs");const d=JSON.parse(fs.readFileSync("output/qa.json","utf8"));process.stdout.write([d.errs||0,d.warnings||0,d.hints||0,d["suppressed-warnings"]||0].join(" "))')"
+          maxe="${{ inputs.qa_max_errors }}"; maxw="${{ inputs.qa_max_warnings }}"
+          {
+            echo "### QA validation summary";
+            echo "| errors | warnings | hints | suppressed warnings |";
+            echo "|-------:|---------:|------:|--------------------:|";
+            echo "| $errs | $warns | $hints | $swarns |";
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "QA: errors=$errs warnings=$warns hints=$hints (allowed errors=$maxe warnings=$maxw)"
+          fail=0
+          if [ "$maxe" -ge 0 ] 2>/dev/null; then
+            if [ "$errs" -gt "$maxe" ]; then
+              echo "::error::QA gate: $errs validation error(s) exceeds the allowed maximum ($maxe). Inspect qa.html in the site-* artifact; fix the new errors, or if intentional raise qa_max_errors in the caller stub."
+              echo "- ❌ **errors $errs > allowed $maxe — build failed**" >> "$GITHUB_STEP_SUMMARY"; fail=1
+            else
+              echo "- ✅ errors $errs ≤ allowed $maxe" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- ℹ️ error gate advisory (qa_max_errors=-1)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$maxw" -ge 0 ] 2>/dev/null && [ "$warns" -gt "$maxw" ]; then
+            echo "::error::QA gate: $warns warning(s) exceeds the allowed maximum ($maxw)."
+            echo "- ❌ **warnings $warns > allowed $maxw — build failed**" >> "$GITHUB_STEP_SUMMARY"; fail=1
+          fi
+          exit $fail
 
   # OUR OWN per-branch S3 previews (previews.hl7.org.au) — RETAINED but OFF by default. The developer
   # preview channel is HL7 International's build.fhir.org (see the build job's report). Re-enable this

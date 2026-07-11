@@ -43,6 +43,24 @@ this pipeline). Our own S3 preview channel is retained but **off by default** �
 `subtree` decides what each IG owns: `""` = au-base owns the `/fhir` root; `ps`/`core` own only
 `/fhir/<subtree>`. All prod uploads are **additive (never `--delete`)**.
 
+## Quality gate (automated, every build)
+
+The last build step reads the publisher's structured QA summary (`output/qa.json`) and writes an
+**errors / warnings / hints** table to the run summary on **every** trigger (PR, push, release). When
+the caller stub sets a threshold it also **fails the build**, so a change that introduces new problems
+is caught without anyone opening `qa.html`:
+
+- `qa_max_errors` — fail if validation **errors** exceed this. Set it to the IG's *current* error count
+  so the gate blocks **regressions** (a new error) while today's known issues don't wall off every PR;
+  ratchet it **down** as errors are fixed. Current baselines: **au-fhir-core = 4**, **au-fhir-ps = 8**,
+  **au-fhir-base = advisory** (`-1`, set the number after the first CI build reports it).
+- `qa_max_warnings` — same, for **warnings**. Advisory (`-1`) by default (AU IGs carry many warnings).
+- `-1` on either = **advisory**: report the counts, never fail.
+
+Because the gate fails the whole `build` job, a regressed **release** never reaches preprod
+(`deploy-preprod` needs `build`). The gate runs *after* the artifact upload, so `qa.html` is still in
+the `site-*` artifact to diagnose a failure. If a new error is intentional, raise the stub threshold.
+
 ## Environments & domains
 
 | host | CloudFront | bucket | purpose | who writes |
