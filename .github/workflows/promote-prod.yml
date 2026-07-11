@@ -1,9 +1,18 @@
 name: Promote preprod → prod (manual, HL7 AU only)
+run-name: "Promote ${{ inputs.ig }} ${{ inputs.version }} → prod"
 
 # Copy the APPROVED preprod content to prod for ONE IG. This is the prod release act, and it lives in
-# the publications repo (NOT the IG repos) so HL7 AU controls who can run it: it is gated by THIS repo's
-# `production` environment (required reviewers) and is only runnable by someone with access to
+# the publications repo (NOT the IG repos) so HL7 AU controls who can run it: it is gated by a PER-IG
+# `production-<ig>` environment (required reviewers) and is only runnable by someone with access to
 # publications. This is the deliberate access boundary — an IG-repo contributor cannot reach prod.
+#
+# PER-IG environments (not one shared `production`) so each IG has its OWN approval gate and its OWN
+# deployment-history lane: the Environments page then reads correctly as "au-fhir-ps 1.0.0 deployed
+# Tuesday, au-fhir-base 6.1.0 deployed today", instead of one IG's deploy marking another's as
+# superseded (GitHub treats one environment as a single deployed thing). ⚠️ Each `production-<ig>`
+# environment MUST be pre-created with reviewers — a referenced-but-unconfigured environment is created
+# on the fly WITHOUT protection rules, i.e. the approval gate would be silently skipped. See
+# docs/publication-process.md for the setup commands (one per IG).
 #
 # It does NOT rebuild. It `aws s3 sync`s the already-reviewed preprod render (hl7au-fhir-ig-mirror) to
 # prod (hl7au-fhir-ig), SCOPED to the released IG's owned path, additive (never --delete) — the classic
@@ -55,7 +64,7 @@ env:
 jobs:
   promote:
     runs-on: ubuntu-latest
-    environment: production   # the HL7 AU required-reviewer gate lives HERE, in publications
+    environment: production-${{ inputs.ig }}   # per-IG HL7 AU required-reviewer gate (see header note)
     steps:
       - name: Resolve owned path + subtree from the IG
         id: map

@@ -81,7 +81,7 @@ live prod is correct here. The report warns if the release **tag** does not matc
 
 Prod is **not** published from the IG repos. Promotion is a manual workflow in **this** repo,
 `.github/workflows/promote-prod.yml` (Actions → **"Promote preprod → prod"**), so HL7 AU controls who
-can release: it is gated by the publications `production` environment (required reviewers) and only
+can release: it is gated by a per-IG `production-<ig>` environment (required reviewers) and only
 runnable by someone with access to publications. An IG-repo contributor cannot reach prod.
 
 It **does not rebuild** — it `aws s3 sync`s the already-reviewed preprod content to prod, **scoped to
@@ -115,13 +115,16 @@ Inputs: `ig` (au-fhir-base / au-fhir-core / au-fhir-ps) and `version`. Steps, in
    **preprod** with the auto-detected mode — validate `https://preprod.hl7.org.au/<owned>/<version>/`.
 3. In **publications** → Actions → **"Promote preprod → prod"**, run with `ig` = the IG and `version` =
    `X.Y.Z`.
-4. Approve the **production** environment prompt on that run.
+4. Approve the **`production-<ig>`** environment prompt on that run.
 5. The run syncs preprod → prod (scoped), invalidates, and verifies prod.
 
-## The `production` environment gate — setup & process
+## The `production-<ig>` environment gates — setup & process
 
-Prod promotion runs from the **publications** repo, so the gate is a `production` environment in
-**publications** (one place, not per-IG). Config:
+Prod promotion runs from the **publications** repo, and the gate is a **per-IG** environment
+(`production-au-fhir-base`, `production-au-fhir-core`, `production-au-fhir-ps`), so each IG has its own
+approval gate and its own deployment-history lane — the Environments page reads correctly as
+"au-fhir-ps 1.0.0 deployed Tuesday, au-fhir-base 6.1.0 deployed today". `promote-prod.yml` selects the
+environment from the `ig` input (`environment: production-${{ inputs.ig }}`). Config, per environment:
 
 - **Required reviewers:** `KyleOps`, `brettesler-ext`, `dt-r` (≥1 must approve each promotion) — HL7 AU.
 - **Deployment branches:** `master` (the promote workflow is a `workflow_dispatch` on publications
@@ -129,24 +132,30 @@ Prod promotion runs from the **publications** repo, so the gate is a `production
 - **OIDC:** the `ghactions_publications_oidc` role trusts `repo:hl7au/*`; it must be able to read the
   preprod bucket and write the prod bucket (see the IAM note above).
 
+> ⚠️ **Pre-create every `production-<ig>` environment with reviewers.** If the workflow references an
+> environment that does not exist yet, GitHub creates it on the fly WITHOUT protection rules — i.e. the
+> approval gate is silently skipped for that IG. Run the setup for all three before the first promotion.
+
 **Approval at promote time:** when "Promote preprod → prod" runs, the `promote` job shows "Waiting" in
 the Actions run; a reviewer approves from the run page (or the repo's Environments tab) and the job
 proceeds. Preprod deploys never gate.
 
-**Create / change reviewers** (idempotent), in publications:
+**Create / change reviewers** (idempotent), in publications — run once per IG:
 
 ```bash
-gh api --method PUT repos/hl7au/publications/environments/production --input - <<'JSON'
+for ig in au-fhir-base au-fhir-core au-fhir-ps; do
+  gh api --method PUT "repos/hl7au/publications/environments/production-$ig" --input - <<'JSON'
 { "reviewers": [ {"type":"User","id":10165817}, {"type":"User","id":6062644}, {"type":"User","id":116611317} ],
   "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
 JSON
-gh api --method POST repos/hl7au/publications/environments/production/deployment-branch-policies -f name='master' -f type='branch'
+  gh api --method POST "repos/hl7au/publications/environments/production-$ig/deployment-branch-policies" -f name='master' -f type='branch'
+done
 ```
 
 IDs: `KyleOps`=10165817, `brettesler-ext`=6062644, `dt-r`=116611317.
 
-> The per-IG `production` environments from the old tag-triggered flow are now unused (prod is no longer
-> published from the IG repos). They can be left in place or removed.
+> The per-IG `production` environments in the IG repos (from the old tag-triggered flow) are now unused
+> (prod is no longer published from the IG repos). They can be left in place or removed.
 
 ## Local iteration
 

@@ -20,7 +20,7 @@ name: IG build → preprod (on GitHub release) — reusable
 #   - PROD is NOT published from here. Promotion to prod (hl7.org.au) is a SEPARATE, manual step that
 #     copies the APPROVED preprod content to prod, run from THIS repo (publications) so HL7 AU controls
 #     who can release: .github/workflows/promote-prod.yml (aws s3 sync preprod → prod, scoped to the
-#     released IG, gated by the publications `production` environment). See docs/publication-process.md.
+#     released IG, gated by a per-IG publications `production-<ig>` env). See docs/publication-process.md.
 # github.* context inside this workflow reflects the CALLER's triggering event.
 #
 # PER-IG PARAMETER — `subtree`:
@@ -37,7 +37,7 @@ name: IG build → preprod (on GitHub release) — reusable
 #   - preprod (hl7au-fhir-ig-mirror / preprod.hl7.org.au): deploy on a GitHub release (or dispatch with
 #     deploy_preprod=true for on-demand branch staging). Ungated — preprod is staging.
 #   - prod (hl7au-fhir-ig / hl7.org.au): NOT written here. Promoted manually from preprod via
-#     publications/.github/workflows/promote-prod.yml (gated by the publications `production` env).
+#     publications/.github/workflows/promote-prod.yml (gated by a per-IG publications `production-<ig>` env).
 #   - previews S3 (hl7au-fhir-ig-previews / previews.hl7.org.au): retained but OFF by default
 #     (enable_s3_preview=true to re-enable our own preview channel).
 #
