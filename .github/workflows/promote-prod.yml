@@ -1,0 +1,136 @@
+name: Promote preprod → prod (manual, HL7 AU only)
+
+# Copy the APPROVED preprod content to prod for ONE IG. This is the prod release act, and it lives in
+# the publications repo (NOT the IG repos) so HL7 AU controls who can run it: it is gated by THIS repo's
+# `production` environment (required reviewers) and is only runnable by someone with access to
+# publications. This is the deliberate access boundary — an IG-repo contributor cannot reach prod.
+#
+# It does NOT rebuild. It `aws s3 sync`s the already-reviewed preprod render (hl7au-fhir-ig-mirror) to
+# prod (hl7au-fhir-ig), SCOPED to the released IG's owned path, additive (never --delete) — the classic
+# "sync approved staging to production" model. Preprod is populated by a GitHub RELEASE of the IG
+# (build-review-publish.yml → deploy-preprod). Validate at preprod.hl7.org.au first, then run this.
+#
+# OWNED PATHS (must match the reusable pipeline's `subtree`):
+#   au-fhir-base → /fhir ROOT (owns the root files + its own version dirs; NOT the core/ps subtrees)
+#   au-fhir-core → /fhir/core
+#   au-fhir-ps   → /fhir/ps
+# The SHARED root files (the /fhir package/publication feeds + the web-root package-registry.json) are
+# promoted for every IG — go-publish read-modify-wrote them during the staged build.
+#
+# PREREQUISITE: the ghactions_publications_oidc role must be allowed to READ the preprod bucket and
+# WRITE the prod bucket (s3 sync source→dest). If a run fails with AccessDenied, that IAM policy needs
+# the prod-bucket PutObject + preprod-bucket Get/List grants.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ig:
+        description: "Which IG to promote from preprod to prod"
+        type: choice
+        required: true
+        options:
+          - au-fhir-base
+          - au-fhir-core
+          - au-fhir-ps
+      version:
+        description: "Version being promoted (e.g. 6.1.0). Must already be staged on preprod; used as a guard + for post-publish verification."
+        type: string
+        required: true
+
+permissions:
+  id-token: write   # OIDC → AWS
+  contents: read
+
+concurrency:
+  group: promote-prod-${{ inputs.ig }}   # serialise promotions per IG; different IGs independent
+  cancel-in-progress: false
+
+env:
+  PROD_BUCKET: hl7au-fhir-ig
+  PREPROD_BUCKET: hl7au-fhir-ig-mirror
+  PROD_DIST: E2U6NB1JDLY5NT
+  AWS_ROLE: arn:aws:iam::966489602583:role/ghactions_publications_oidc
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: production   # the HL7 AU required-reviewer gate lives HERE, in publications
+    steps:
+      - name: Resolve owned path + subtree from the IG
+        id: map
+        run: |
+          case "${{ inputs.ig }}" in
+            au-fhir-base) sub=""     ; own="fhir" ;;
+            au-fhir-core) sub="core" ; own="fhir/core" ;;
+            au-fhir-ps)   sub="ps"   ; own="fhir/ps" ;;
+            *) echo "::error::unknown ig '${{ inputs.ig }}'"; exit 1 ;;
+          esac
+          echo "sub=$sub" >> "$GITHUB_OUTPUT"
+          echo "own=$own" >> "$GITHUB_OUTPUT"
+          echo "IG ${{ inputs.ig }} → owned path /$own (subtree='$sub')"
+
+      - name: Configure AWS credentials from GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Refuse to promote a version that was never staged — the whole point is to copy REVIEWED preprod
+      # content, so if the version dir is absent on preprod, someone skipped the release/validation step.
+      - name: Guard — the version must already be staged on preprod
+        run: |
+          own="${{ steps.map.outputs.own }}"; ver="${{ inputs.version }}"
+          if ! aws s3 ls "s3://$PREPROD_BUCKET/$own/$ver/" >/dev/null 2>&1; then
+            echo "::error::Version '$ver' is not staged on preprod at s3://$PREPROD_BUCKET/$own/$ver/. Cut a GitHub release of ${{ inputs.ig }} first (it deploys to preprod), validate at https://preprod.hl7.org.au/$own/$ver/, then re-run."
+            exit 1
+          fi
+          echo "Confirmed staged: s3://$PREPROD_BUCKET/$own/$ver/ — promoting to prod."
+
+      - name: Sync approved preprod content → prod (scoped to the released IG; additive)
+        run: |
+          aws configure set default.s3.max_concurrent_requests 64   # parallelise the many small objects
+          aws configure set default.s3.max_queue_size 10000
+          own="${{ steps.map.outputs.own }}"; sub="${{ steps.map.outputs.sub }}"
+          if [ -z "$sub" ]; then
+            # Root owner (au-base): sync the whole /fhir owned tree EXCEPT the sibling subtrees. preprod
+            # is a FULL mirror, so without these excludes a base promotion would drag core/ps preprod
+            # state to prod as a side effect. ⚠️ Add an --exclude here for every new subtree IG.
+            aws s3 sync "s3://$PREPROD_BUCKET/fhir" "s3://$PROD_BUCKET/fhir" \
+              --exclude "core/*" --exclude "ps/*" --only-show-errors
+          else
+            # Subtree owner (core/ps): sync just the owned subtree ...
+            aws s3 sync "s3://$PREPROD_BUCKET/$own" "s3://$PROD_BUCKET/$own" --only-show-errors
+            # ... plus the SHARED /fhir feeds it read-modify-wrote during the staged build (they live
+            # ABOVE the owned subtree, so the sync above does not carry them).
+            aws s3 cp "s3://$PREPROD_BUCKET/fhir/package-feed.xml"     "s3://$PROD_BUCKET/fhir/package-feed.xml"     --only-show-errors
+            aws s3 cp "s3://$PREPROD_BUCKET/fhir/publication-feed.xml" "s3://$PROD_BUCKET/fhir/publication-feed.xml" --only-show-errors
+          fi
+          # package-registry.json is at the WEB ROOT (outside /fhir) for EVERY IG — promote it too.
+          aws s3 cp "s3://$PREPROD_BUCKET/package-registry.json" "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json on preprod — skipping"
+
+      - name: Invalidate prod CloudFront
+        run: aws cloudfront create-invalidation --distribution-id "$PROD_DIST" --paths "/*" >/dev/null
+
+      # Post-publish verification: the promoted version's landing page + the owned-path current landing
+      # must return 200 on prod. A non-200 fails the run so a broken promotion is loud.
+      - name: Verify prod publish
+        run: |
+          own="${{ steps.map.outputs.own }}"; ver="${{ inputs.version }}"
+          base="https://hl7.org.au/$own"
+          fail=0
+          for u in "$base/$ver/index.html" "$base/index.html"; do
+            for attempt in 1 2 3 4 5; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$u" || echo 000)
+              [ "$code" = "200" ] && break
+              sleep 15
+            done
+            if [ "$code" = "200" ]; then echo "OK   $u"; else echo "::error::FAIL ($code) $u"; fail=1; fi
+          done
+          {
+            echo "### Promoted ${{ inputs.ig }} to prod";
+            echo "- version: **${{ inputs.version }}** (copied from approved preprod content, no rebuild)";
+            echo "- $base/$ver/index.html";
+            echo "- current: $base/index.html";
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
