@@ -43,23 +43,23 @@ this pipeline). Our own S3 preview channel is retained but **off by default** �
 `subtree` decides what each IG owns: `""` = au-base owns the `/fhir` root; `ps`/`core` own only
 `/fhir/<subtree>`. All prod uploads are **additive (never `--delete`)**.
 
-## Quality gate (automated, every build)
+## Quality gate (automated QA regression gate)
 
-The last build step reads the publisher's structured QA summary (`output/qa.json`) and writes an
-**errors / warnings / hints** table to the run summary on **every** trigger (PR, push, release). When
-the caller stub sets a threshold it also **fails the build**, so a change that introduces new problems
-is caught without anyone opening `qa.html`:
+The last build step-group summarises the render's QA (`ig-src/output/qa.txt`) to the run summary on
+**every** trigger, and on a **PR** it gates:
 
-- `qa_max_errors` — fail if validation **errors** exceed this. Set it to the IG's *current* error count
-  so the gate blocks **regressions** (a new error) while today's known issues don't wall off every PR;
-  ratchet it **down** as errors are fixed. Current baselines: **au-fhir-core = 4**, **au-fhir-ps = 8**,
-  **au-fhir-base = advisory** (`-1`, set the number after the first CI build reports it).
-- `qa_max_warnings` — same, for **warnings**. Advisory (`-1`) by default (AU IGs carry many warnings).
-- `-1` on either = **advisory**: report the counts, never fail.
+- **Baseline is the base branch itself** — a tiny error-count file is cached on branch pushes and
+  restored (keyed by the PR's base branch) on PRs, so there is **no per-IG threshold to maintain** and
+  both sides are compared apples-to-apples (same pipeline, same combined jar, unlike build.fhir.org).
+- **PR gate** — the run **fails if the branch adds errors** over its base branch's recorded count. A
+  first run with no baseline reports `n/a` and does not gate.
+- **PR comment** — upserts a marker-based (no-spam) comment on the PR with the errors/warnings/info
+  table, the delta vs base, and a collapsed list of the error lines.
 
-Because the gate fails the whole `build` job, a regressed **release** never reaches preprod
-(`deploy-preprod` needs `build`). The gate runs *after* the artifact upload, so `qa.html` is still in
-the `site-*` artifact to diagnose a failure. If a new error is intentional, raise the stub threshold.
+The gate runs *after* the previews/artifact upload, so a regressed PR still produces its reviewable
+`site-*` artifact (with `qa.html`) to diagnose. The PR comment needs `pull-requests: write`, which the
+**caller stub must also grant** (`permissions: pull-requests: write`); without it the summary + gate
+still work and the comment step just logs a warning.
 
 ## Environments & domains
 
