@@ -1,8 +1,8 @@
-name: IG build → preprod (on merge) → gated prod publish (reusable)
+name: IG build → preprod (on GitHub release) — reusable
 
 # CENTRALIZED, reusable (workflow_call) pipeline for the AU FHIR IGs. ONE source of truth lives here
 # in hl7au/publications; each IG repo (au-fhir-base, au-fhir-ps, au-fhir-core) carries only a thin
-# caller stub that forwards its push/PR/tag/dispatch events to this workflow.
+# caller stub that forwards its push/PR/release/dispatch events to this workflow.
 #
 # WHAT IT DOES: renders the IG ONCE (publication mode), then runs go-publish TWICE off that single
 # render (-reuse-build → the 2nd is ~100s, not another render) to produce BOTH a WORKING and a
@@ -11,18 +11,24 @@ name: IG build → preprod (on merge) → gated prod publish (reusable)
 #     driven by HL7's own auto-builder — NOT this pipeline. We just link to it + attach the .zip.
 #     (Our own S3 preview is retained but OFF by default — set enable_s3_preview=true to re-enable it
 #      when we specifically need to validate our own pipeline/publisher output.)
-#   - On MERGE TO master → auto-deploy to PREPROD (preprod.hl7.org.au) for staging validation. Mode
-#     (milestone vs working) is AUTO-DETECTED from publication-request.json `status` (the FHIR-standard
-#     signal): release/trial-use/normative/normative+trial-use → milestone (becomes 'current');
-#     draft/ballot/preview/update/ci-build → working (versioned snapshot, not current).
-#   - On a release-* / v* TAG push → publish to PROD (hl7.org.au). The tag is the release act; mode
-#     is auto-detected from publication-request.json `status` on the tagged commit:
-#       working (draft/ballot/preview — the frequent case) → publishes AUTOMATICALLY as a versioned
-#         snapshot ('current' untouched; additive only). Tag→version match is enforced.
-#       milestone (release/trial-use/normative — rewrites 'current'; ~annual) → GATED behind the
-#         caller repo's `production` environment (one reviewer click), plus the clean-release guard.
-#     Both paths end with CloudFront invalidation + post-publish verify.
+#   - On a GitHub RELEASE (published) → deploy to PREPROD (preprod.hl7.org.au) for staging validation.
+#     A release targets the publication/release BRANCH (which is never merged to master); the release is
+#     the staging act. Mode (milestone vs working) is AUTO-DETECTED from publication-request.json
+#     `status` (the FHIR-standard signal): release/trial-use/normative/normative+trial-use → milestone
+#     (becomes the candidate 'current'); draft/ballot/preview/update/ci-build → working (versioned
+#     snapshot, not current). Ungated — preprod is staging.
+#   - PROD is NOT published from here. Promotion to prod (hl7.org.au) is a SEPARATE, manual step that
+#     copies the APPROVED preprod content to prod, run from THIS repo (publications) so HL7 AU controls
+#     who can release: .github/workflows/promote-prod.yml (aws s3 sync preprod → prod, scoped to the
+#     released IG, gated by a per-IG publications `production-<ig>` env). See docs/publication-process.md.
 # github.* context inside this workflow reflects the CALLER's triggering event.
+#
+# QUALITY GATE (QA regression gate): every build summarises the render's QA (ig-src/output/qa.txt) to
+# the run summary. On a PR it compares the error count against the base branch's last recorded count
+# (a tiny cached count file, saved on branch pushes, restored keyed by base branch — so both sides are
+# the same pipeline + same jar) and FAILS the build if the branch ADDS errors, then upserts a QA comment
+# on the PR. No per-IG threshold to maintain; the baseline is the base branch itself. Needs the caller
+# stub to grant `pull-requests: write` for the comment (the summary + gate work regardless).
 #
 # PER-IG PARAMETER — `subtree`:
 #   - ""          → this IG owns the /fhir ROOT (au-base). Syncs out/<mode>/fhir → s3://<bucket>/fhir.
@@ -35,10 +41,10 @@ name: IG build → preprod (on merge) → gated prod publish (reusable)
 #
 # DEPLOY TARGETS:
 #   - build.fhir.org (HL7 CI): developer previews — external, not written by us.
-#   - preprod (hl7au-fhir-ig-mirror / preprod.hl7.org.au): auto-deploy on merge to master. Ungated.
-#   - prod (hl7au-fhir-ig / hl7.org.au): release-*/v* tags. WORKING snapshots publish automatically
-#     (tag = approval); MILESTONE stays GATED on the caller repo's `production` environment
-#     (required reviewers; deployment rules must allow master + v* + release-* tags).
+#   - preprod (hl7au-fhir-ig-mirror / preprod.hl7.org.au): deploy on a GitHub release (or dispatch with
+#     deploy_preprod=true for on-demand branch staging). Ungated — preprod is staging.
+#   - prod (hl7au-fhir-ig / hl7.org.au): NOT written here. Promoted manually from preprod via
+#     publications/.github/workflows/promote-prod.yml (gated by a per-IG publications `production-<ig>` env).
 #   - previews S3 (hl7au-fhir-ig-previews / previews.hl7.org.au): retained but OFF by default
 #     (enable_s3_preview=true to re-enable our own preview channel).
 #
@@ -59,16 +65,8 @@ on:
         type: string
         required: false
         default: ""
-      publish_milestone:
-        description: "Promote the MILESTONE build to prod S3 (becomes 'current'; gated by production env)."
-        type: boolean
-        default: false
-      publish_working:
-        description: "Publish the WORKING build to prod S3 (versioned snapshot, NOT current; ungated — additive only)."
-        type: boolean
-        default: false
       deploy_preprod:
-        description: "Deploy this build to PREPROD (preprod.hl7.org.au) — on-demand branch staging with the real CloudFront setup. Master merges deploy automatically regardless."
+        description: "Deploy this build to PREPROD (preprod.hl7.org.au). A GitHub release deploys automatically; set this for on-demand branch staging behind the real CloudFront setup."
         type: boolean
         default: false
       enable_s3_preview:
@@ -77,8 +75,9 @@ on:
         default: false
 
 permissions:
-  id-token: write   # OIDC → AWS (preprod deploy + gated prod publish + optional S3 preview)
+  id-token: write        # OIDC → AWS (preprod deploy + optional S3 preview)
   contents: read
+  pull-requests: write   # QA gate: comment the QA summary on the triggering PR (needs the caller stub to grant it too)
 
 concurrency:
   group: ig-publish-${{ github.repository }}   # serialise each IG against itself; siblings independent
@@ -108,7 +107,6 @@ jobs:
       status: ${{ steps.detect.outputs.status }}
       version: ${{ steps.detect.outputs.version }}
       pubmode: ${{ steps.detect.outputs.pubmode }}
-      release_ok: ${{ steps.detect.outputs.release_ok }}
       tag_version_ok: ${{ steps.detect.outputs.tag_version_ok }}
     steps:
       - name: Compute build label (branch / pr-N / tag / dispatch ref) + owned path
@@ -137,13 +135,12 @@ jobs:
       # (NOT the version number — AU history shows clean versions like 2.0.0 shipped as `preview` and
       # 1.0.0 as `ballot`; the versions that became 'current' were all `trial-use`). The publisher's
       # `mode` (working/milestone) and `status` are independent; here `status` drives the choice:
-      #   release | trial-use | normative | normative+trial-use → MILESTONE (becomes 'current')
+      #   release | trial-use | normative | normative+trial-use → MILESTONE (candidate 'current')
       #   draft | ballot | preview | update | ci-build | (other) → WORKING (versioned, not current)
-      # release_ok additionally requires a clean SemVer release version (no -prerelease suffix), used
-      # as the prod-publish guard so a -ci-build/preview can never be published to prod as 'current'.
-      # tag_version_ok: on tag pushes, the tag (minus its release-/v prefix) must equal the
-      # publication-request version — publishing is automatic on tags, so this is the guard against
-      # tagging the wrong commit (e.g. release-6.1.0 on a commit whose publication-request says 6.0.2).
+      # tag_version_ok: on a GitHub release (its ref is the tag), the tag (minus its release-/v prefix)
+      # must equal the publication-request version. Preprod is staging so this does NOT block; it's
+      # surfaced in the report as a guard against staging the wrong commit (e.g. a release tagged
+      # v6.1.0 on a commit whose publication-request says 6.0.2) BEFORE it is promoted to prod.
       - name: Detect publication mode (status-driven)
         id: detect
         working-directory: ig-src
@@ -154,9 +151,6 @@ jobs:
             release|trial-use|normative|normative+trial-use) pubmode=milestone ;;
             *) pubmode=working ;;
           esac
-          # clean release version = X.Y.Z with no -prerelease suffix
-          relok=false
-          if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && [ "$pubmode" = "milestone" ]; then relok=true; fi
           tagok=false; tagnorm=""
           if [ "${{ github.ref_type }}" = "tag" ]; then
             tagnorm="${{ github.ref_name }}"; tagnorm="${tagnorm#release-}"; tagnorm="${tagnorm#v}"
@@ -165,9 +159,8 @@ jobs:
           echo "status=$status"   >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "pubmode=$pubmode" >> "$GITHUB_OUTPUT"
-          echo "release_ok=$relok" >> "$GITHUB_OUTPUT"
           echo "tag_version_ok=$tagok" >> "$GITHUB_OUTPUT"
-          echo "status='$status' version='$version' → pubmode=$pubmode (clean-release=$relok tag-match=$tagok)"
+          echo "status='$status' version='$version' → pubmode=$pubmode (tag-match=$tagok)"
 
       - name: Checkout publish-setup.json + templates (sparse, from publications)
         uses: actions/checkout@v4
@@ -364,6 +357,100 @@ jobs:
             echo "- detected publication mode: **${{ steps.detect.outputs.pubmode }}** (status \`${{ steps.detect.outputs.status }}\`, version \`${{ steps.detect.outputs.version }}\`)";
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ---- QA regression gate --------------------------------------------------------------------
+      # Summarise the render's QA errors to the run summary; on PRs, compare the error count against
+      # the base branch's last recorded count and FAIL if the branch adds errors; and upsert a comment
+      # on the triggering PR. The baseline is a tiny cached count file, written on branch pushes and
+      # restored (keyed by base branch) on PRs — so both sides are the same pipeline and same jar.
+      # Runs after the previews so a regressed PR still produces its reviewable artifact.
+      - name: Restore base QA baseline (PRs)
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: qa-baseline
+          key: qa-baseline-${{ github.repository }}-${{ github.base_ref }}-${{ github.run_id }}
+          restore-keys: |
+            qa-baseline-${{ github.repository }}-${{ github.base_ref }}-
+
+      - name: Analyse QA, summarise, gate PRs, comment
+        if: always() && steps.render.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          SLUG: ${{ steps.meta.outputs.slug }}
+        run: |
+          qa="ig-src/output/qa.txt"
+          if [ ! -f "$qa" ]; then echo "::warning::no qa.txt at $qa — skipping QA gate"; exit 0; fi
+          num() { grep -oE "$1 = [0-9]+" "$qa" | head -1 | grep -oE '[0-9]+' || true; }
+          errs=$(num err);   errs=${errs:-0}
+          warns=$(num warn); warns=${warns:-0}
+          infos=$(num info); infos=${infos:-0}
+          grep '^ERROR:' "$qa" | sed -E 's/ \(error message.*//' > qa-errors.txt || true
+
+          base_errs=""
+          [ -f qa-baseline/count.txt ] && base_errs=$(tr -cd '0-9' < qa-baseline/count.txt)
+
+          {
+            echo "## QA results — \`$SLUG\`"
+            echo ""
+            echo "| level | count |"
+            echo "|---|--:|"
+            echo "| ❌ errors | $errs |"
+            echo "| ⚠️ warnings | $warns |"
+            echo "| ℹ️ info | $infos |"
+            if [ -n "$base_errs" ]; then
+              d=$((errs - base_errs)); sign=""; [ "$d" -gt 0 ] && sign="+"
+              echo ""
+              echo "Errors vs base \`$BASE_REF\`: **$base_errs → $errs** (${sign}${d})"
+            fi
+            if [ "$errs" -gt 0 ]; then
+              echo ""; echo "<details><summary>$errs error(s)</summary>"; echo ""
+              echo '```'; cat qa-errors.txt; echo '```'; echo ""; echo "</details>"
+            fi
+          } > qa-summary.md
+          cat qa-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+          # PR comment (best-effort; needs pull-requests: write granted by the caller stub)
+          if [ "$EVENT" = "pull_request" ] && [ -n "${PR_NUMBER:-}" ]; then
+            { printf '<!-- qa-gate -->\n'; cat qa-summary.md; } > qa-comment.md
+            node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({body:fs.readFileSync("qa-comment.md","utf8")}))' > qa-payload.json
+            api="https://api.github.com/repos/$REPO"
+            cid=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$api/issues/$PR_NUMBER/comments?per_page=100" \
+              | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")||"[]");const c=(Array.isArray(d)?d:[]).find(x=>x.body&&x.body.includes("<!-- qa-gate -->"));process.stdout.write(c?String(c.id):"")' || true)
+            if [ -n "$cid" ]; then
+              curl -sS -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                "$api/issues/comments/$cid" -d @qa-payload.json >/dev/null && echo "updated PR #$PR_NUMBER comment" \
+                || echo "::warning::could not update PR comment (grant pull-requests: write in the caller)"
+            else
+              curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                "$api/issues/$PR_NUMBER/comments" -d @qa-payload.json >/dev/null && echo "posted PR #$PR_NUMBER comment" \
+                || echo "::warning::could not post PR comment (grant pull-requests: write in the caller)"
+            fi
+          fi
+
+          # Record this build's error count as the branch baseline (cached by the save step on pushes).
+          mkdir -p qa-baseline
+          echo "$errs" > qa-baseline/count.txt
+          cp qa-errors.txt qa-baseline/errors.txt 2>/dev/null || true
+
+          # Gate: a PR may not add errors over its base branch.
+          if [ "$EVENT" = "pull_request" ] && [ -n "$base_errs" ] && [ "$errs" -gt "$base_errs" ]; then
+            echo "::error::QA regression — $errs error(s) vs base \`$BASE_REF\` ($base_errs). Resolve the new errors before merging."
+            exit 1
+          fi
+          echo "QA gate OK — errors=$errs, base=${base_errs:-n/a}"
+
+      - name: Save QA baseline (branch pushes)
+        if: github.event_name == 'push' && github.ref_type == 'branch' && steps.render.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: qa-baseline
+          key: qa-baseline-${{ github.repository }}-${{ github.ref_name }}-${{ github.run_id }}
+
   # OUR OWN per-branch S3 previews (previews.hl7.org.au) — RETAINED but OFF by default. The developer
   # preview channel is HL7 International's build.fhir.org (see the build job's report). Re-enable this
   # (enable_s3_preview=true) only when we need to validate our OWN pipeline/publisher output (e.g.
@@ -447,20 +534,22 @@ jobs:
             echo "the same paths resolve under \`$dnsbase/working/$own/$ver/index.html\`._";
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # AUTO-DEPLOY TO PREPROD on a merge to master — the staging/validation environment before a prod
-  # release. Also runs on an explicit dispatch with deploy_preprod=true (+ ref=<branch>) so a BRANCH
-  # build can be staged on preprod BEFORE merging — unlike the previews channel, preprod sits behind
-  # the real CloudFront distribution (canonical/redirect functions), so pages like qa.html and the
-  # publish box behave exactly as they will on prod. UNGATED (preprod is not prod). Deploys the
-  # AUTO-DETECTED mode (milestone vs working, from
-  # publication-request.json `status`): a release/trial-use status lands as the candidate 'current' so
-  # preprod shows exactly what prod will look like; a draft/ballot/preview/ci-build status lands as a
-  # non-current versioned snapshot. Same additive owned-subtree + shared-root-files model as prod, but
-  # to the mirror bucket. preprod mirrors prod, so seeding the lean -web from live prod (in the build
-  # job) is correct here too. CloudFront (CachingOptimized) is invalidated so the change shows promptly.
+  # DEPLOY TO PREPROD on a GitHub release — the staging/validation environment before a prod release.
+  # A release targets the publication/release BRANCH (never merged to master); publishing the release
+  # is the staging act. Also runs on an explicit dispatch with deploy_preprod=true (+ ref=<branch>) so a
+  # BRANCH build can be staged BEFORE cutting the release — unlike the previews channel, preprod sits
+  # behind the real CloudFront distribution (canonical/redirect functions), so pages like qa.html and
+  # the publish box behave exactly as they will on prod. UNGATED (preprod is not prod). Deploys the
+  # AUTO-DETECTED mode (milestone vs working, from publication-request.json `status`): a
+  # release/trial-use status lands as the candidate 'current' so preprod shows exactly what prod will
+  # look like; a draft/ballot/preview/ci-build status lands as a non-current versioned snapshot. Same
+  # additive owned-subtree + shared-root-files model as prod, but to the mirror bucket. preprod mirrors
+  # prod, so seeding the lean -web from live prod (in the build job) is correct here too. CloudFront
+  # (CachingOptimized) is invalidated so the change shows promptly. Prod promotion is a separate manual
+  # step (promote-prod.yml) that copies this approved preprod content to prod.
   deploy-preprod:
     needs: build
-    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.deploy_preprod) }}
+    if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.deploy_preprod) }}
     runs-on: ubuntu-latest
     steps:
       - name: Download built site
@@ -496,140 +585,8 @@ jobs:
             echo "- mode: **${{ needs.build.outputs.pubmode }}** (status \`${{ needs.build.outputs.status }}\`, version \`${{ needs.build.outputs.version }}\`)";
             echo "- https://preprod.hl7.org.au/$own/$ver/index.html";
             echo "- directory of versions: https://preprod.hl7.org.au/$own/history.html";
-            echo "_Validate here, then cut a prod release by pushing a \`release-<version>\` tag: a working status publishes automatically as a versioned snapshot; a milestone status waits for one production-environment approval._";
+            if [ "${{ github.ref_type }}" = "tag" ] && [ "${{ needs.build.outputs.tag_version_ok }}" != "true" ]; then
+              echo "- ⚠️ **tag/version mismatch:** release tag \`${{ github.ref_name }}\` does not match publication-request version \`${{ needs.build.outputs.version }}\`. Confirm the release targets the intended commit BEFORE promoting to prod.";
+            fi
+            echo "_Validate here, then promote to prod from the **publications** repo: Actions → \"Promote preprod → prod\" (ig=\`${{ github.event.repository.name }}\`, version=\`${{ needs.build.outputs.version }}\`), which waits for a production-environment approval._";
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # Promote the MILESTONE build to PROD — a milestone rewrites 'current', so it stays gated by the
-  # caller repo's `production` environment (required reviewers; deployment rules = master + v* +
-  # release-* tags). Runs on a tag push whose publication-request status detects as milestone, or an
-  # explicit dispatch with publish_milestone=true.
-  publish-milestone:
-    needs: build   # not preview-s3: a preview hiccup must not block prod; the production env is the gate
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.build.outputs.pubmode == 'milestone') || (github.event_name == 'workflow_dispatch' && inputs.publish_milestone) }}
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      # Release guard: a prod milestone must be a clean SemVer release (X.Y.Z, no -prerelease suffix)
-      # with a milestone status (release/trial-use/normative). Blocks accidentally publishing a
-      # -ci-build/draft/ballot/preview as prod 'current'. (release_ok is computed in the build job.)
-      # On tag pushes the tag must also name the version being published (tag_version_ok).
-      - name: Guard — require a clean release version + milestone status
-        run: |
-          if [ "${{ needs.build.outputs.release_ok }}" != "true" ]; then
-            echo "::error::Refusing to publish to PROD: version='${{ needs.build.outputs.version }}' status='${{ needs.build.outputs.status }}'. A prod milestone needs a clean release version (X.Y.Z) and a release/trial-use/normative status. Set version + status in publication-request.json, then tag release-<version>."
-            exit 1
-          fi
-          if [ "${{ github.ref_type }}" = "tag" ] && [ "${{ needs.build.outputs.tag_version_ok }}" != "true" ]; then
-            echo "::error::Tag '${{ github.ref_name }}' does not match publication-request.json version '${{ needs.build.outputs.version }}' — refusing to publish. Tag the commit whose publication-request names this version (release-<version>)."
-            exit 1
-          fi
-          echo "Release guard OK: version=${{ needs.build.outputs.version }} status=${{ needs.build.outputs.status }}"
-      - name: Download reviewed previews
-        uses: actions/download-artifact@v4
-        with: { name: "site-${{ needs.build.outputs.slug }}" }
-      - name: Configure AWS credentials from GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-      # Additive — uploads the new (now-current) version dir (incl. full-ig.zip + npm package.tgz) + the
-      # regenerated owned-path root (history.html, package-list, redirects) + the shared root files this
-      # IG read-modify-wrote that fall OUTSIDE the owned sync. With dynamic-publish-box there are NO
-      # rewritten old-version files. Never --delete.
-      - name: Publish MILESTONE build to prod S3 (owned subtree + shared root files; additive)
-        run: |
-          aws configure set default.s3.max_concurrent_requests 64   # parallelise the many small PUTs
-          aws configure set default.s3.max_queue_size 10000
-          own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
-          mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
-          test -d "out/milestone/$own" || { echo "::error::milestone build missing (the milestone step failed) — not publishing"; exit 1; }
-          # (a) the owned tree (root owner: /fhir incl. the feeds; subtree owner: just /fhir/<subtree>)
-          aws s3 sync "out/milestone/$own" "s3://$PROD_BUCKET/$own" --only-show-errors
-          # (b) for subtree owners, the /fhir feeds live ABOVE the owned sync — upload them individually
-          if [ -n "$sub" ]; then
-            aws s3 cp out/milestone/fhir/package-feed.xml      "s3://$PROD_BUCKET/fhir/package-feed.xml"      --only-show-errors
-            aws s3 cp out/milestone/fhir/publication-feed.xml  "s3://$PROD_BUCKET/fhir/publication-feed.xml"  --only-show-errors
-          fi
-          # (c) package-registry.json is at the WEB ROOT (outside fhir/) for EVERY IG — upload it
-          [ -f out/milestone/package-registry.json ] && aws s3 cp out/milestone/package-registry.json "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json in output — skipping"
-      - name: Invalidate prod CloudFront
-        run: aws cloudfront create-invalidation --distribution-id "$PROD_DIST" --paths "/*" >/dev/null
-      # Post-publish verification: the new version's landing page must be live (200) on prod, and the
-      # canonical 'current' page must resolve. A non-200 fails the run so a broken publish is loud.
-      - name: Verify prod publish
-        run: |
-          own="${{ needs.build.outputs.own }}"; ver="${{ needs.build.outputs.ver }}"
-          base="https://hl7.org.au/$own"
-          fail=0
-          for u in "$base/$ver/index.html" "$base/index.html"; do
-            for attempt in 1 2 3 4 5; do
-              code=$(curl -s -o /dev/null -w '%{http_code}' "$u" || echo 000)
-              [ "$code" = "200" ] && break
-              sleep 15
-            done
-            if [ "$code" = "200" ]; then echo "OK   $u"; else echo "::error::FAIL ($code) $u"; fail=1; fi
-          done
-          {
-            echo "### Published to prod";
-            echo "- version: **${{ needs.build.outputs.version }}** (status \`${{ needs.build.outputs.status }}\`)";
-            echo "- $base/$ver/index.html";
-            echo "- current: $base/index.html";
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit $fail
-
-  # Publish the WORKING build to PROD — the common case (preview/ballot/draft). Runs AUTOMATICALLY on
-  # a tag push whose status detects as working: the tag is the release act, no approval click. Safe to
-  # leave ungated because a working publish is strictly additive (new versioned dir + regenerated
-  # owned-path root; 'current' and old versions untouched) and the tag→version guard below stops a
-  # mistagged commit. Also runnable via dispatch (publish_working=true), mutually exclusive with
-  # publish_milestone. Same OIDC role as deploy-preprod — no environment needed (trust = repo:hl7au/*).
-  publish-working:
-    needs: build
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.build.outputs.pubmode == 'working') || (github.event_name == 'workflow_dispatch' && inputs.publish_working && !inputs.publish_milestone) }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Guard — tag must name the version being published
-        if: ${{ github.ref_type == 'tag' }}
-        run: |
-          if [ "${{ needs.build.outputs.tag_version_ok }}" != "true" ]; then
-            echo "::error::Tag '${{ github.ref_name }}' does not match publication-request.json version '${{ needs.build.outputs.version }}' — refusing to publish. Tag the commit whose publication-request names this version (release-<version>)."
-            exit 1
-          fi
-          echo "Tag guard OK: ${{ github.ref_name }} → version ${{ needs.build.outputs.version }} (status ${{ needs.build.outputs.status }})"
-      - name: Download reviewed previews
-        uses: actions/download-artifact@v4
-        with: { name: "site-${{ needs.build.outputs.slug }}" }
-      - name: Configure AWS credentials from GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-      # New (non-current) version dir + regenerated owned-path root (package-list/history/redirects) +
-      # the shared root files. Does NOT touch old versions or the current landing. Additive — no --delete.
-      - name: Publish WORKING build to prod S3 (owned subtree + shared root files; additive)
-        run: |
-          aws configure set default.s3.max_concurrent_requests 64   # parallelise the many small PUTs
-          aws configure set default.s3.max_queue_size 10000
-          own="${{ needs.build.outputs.own }}"; sub="${{ inputs.subtree }}"
-          mkdir -p out && tar -xzf "preview-${{ needs.build.outputs.slug }}.tar.gz" -C out
-          test -d "out/working/$own" || { echo "::error::working build missing — not publishing"; exit 1; }
-          aws s3 sync "out/working/$own" "s3://$PROD_BUCKET/$own" --only-show-errors
-          if [ -n "$sub" ]; then
-            aws s3 cp out/working/fhir/package-feed.xml      "s3://$PROD_BUCKET/fhir/package-feed.xml"      --only-show-errors
-            aws s3 cp out/working/fhir/publication-feed.xml  "s3://$PROD_BUCKET/fhir/publication-feed.xml"  --only-show-errors
-          fi
-          [ -f out/working/package-registry.json ] && aws s3 cp out/working/package-registry.json "s3://$PROD_BUCKET/package-registry.json" --only-show-errors || echo "no package-registry.json in output — skipping"
-      - name: Invalidate prod CloudFront
-        run: aws cloudfront create-invalidation --distribution-id "$PROD_DIST" --paths "/*" >/dev/null
-      - name: Verify prod publish (new version dir is live)
-        run: |
-          own="${{ needs.build.outputs.own }}"; ver="${{ needs.build.outputs.ver }}"
-          u="https://hl7.org.au/$own/$ver/index.html"
-          for attempt in 1 2 3 4 5; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$u" || echo 000)
-            [ "$code" = "200" ] && break
-            sleep 15
-          done
-          if [ "$code" = "200" ]; then echo "OK $u"; else echo "::error::FAIL ($code) $u"; exit 1; fi
-          echo "### Published WORKING build to prod" >> "$GITHUB_STEP_SUMMARY"
-          echo "- $u (versioned snapshot; 'current' unchanged)" >> "$GITHUB_STEP_SUMMARY"
