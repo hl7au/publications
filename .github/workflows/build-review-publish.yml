@@ -372,8 +372,9 @@ jobs:
           restore-keys: |
             qa-baseline-${{ github.repository }}-${{ github.base_ref }}-
 
+      # BE: suppressing PR comment for now
       - name: Analyse QA, summarise, gate PRs, comment
-        if: always() && steps.render.outcome == 'success'
+        if: false && always() && steps.render.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
